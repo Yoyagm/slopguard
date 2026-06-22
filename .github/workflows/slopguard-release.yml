@@ -1,0 +1,91 @@
+name: SlopGuard Release
+
+# Se dispara al etiquetar vX.Y.Z. Construye los artefactos del paquete y el PDF
+# técnico, y publica un GitHub Release. La publicación a PyPI es opt-in (trusted
+# publishing OIDC) activando la variable de repo PUBLISH_TO_PYPI=true.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Construir sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Construir y verificar
+        run: |
+          python -m pip install -U pip build twine
+          python -m build
+          twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slopguard-dist
+          path: dist/*
+          if-no-files-found: error
+
+  docs-pdf:
+    name: Documento técnico LaTeX -> PDF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compilar (xelatex)
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: docs
+          root_file: slopguard.tex
+          latexmk_use_xelatex: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slopguard-doc-tecnico
+          path: docs/slopguard.pdf
+          if-no-files-found: error
+
+  release:
+    name: Publicar GitHub Release
+    needs: [build, docs-pdf]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Crear release con artefactos
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/slopguard-dist/*
+            artifacts/slopguard-doc-tecnico/*.pdf
+
+  publish-pypi:
+    name: Publicar en PyPI (opt-in)
+    needs: [build]
+    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC para trusted publishing (sin tokens en secretos)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: slopguard-dist
+          path: dist
+
+      - name: Publicar
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

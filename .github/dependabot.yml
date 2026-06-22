@@ -1,0 +1,20 @@
+# Mantiene actualizadas las acciones de CI y las herramientas de desarrollo.
+# SlopGuard tiene CERO dependencias de runtime; el ecosystem pip cubre solo las
+# dev-deps declaradas en pyproject.toml (ruff/mypy/pytest/import-linter).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    labels: ["dependencies", "ci"]
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+    labels: ["dependencies"]

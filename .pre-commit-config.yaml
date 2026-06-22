@@ -1,0 +1,25 @@
+# Hooks locales que reusan el venv del proyecto (correr `make install` primero).
+# Gatean lo mismo que CI antes de cada commit: lint, tipos y arquitectura.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint + seguridad)
+        entry: .venv/bin/ruff check --force-exclude
+        language: system
+        types: [python]
+        require_serial: true
+
+      - id: mypy
+        name: mypy (tipado estricto)
+        entry: .venv/bin/mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      - id: import-linter
+        name: import-linter (contratos R10)
+        entry: .venv/bin/lint-imports
+        language: system
+        pass_filenames: false
+        always_run: true

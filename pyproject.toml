@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slopguard"
+version = "0.1.0"
+description = "Guardian pre-instalacion contra slopsquatting: detecta dependencias Python alucinadas, typosquatting o maliciosas antes de instalarlas."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "equipo" }]
+keywords = ["security", "supply-chain", "slopsquatting", "typosquatting", "pypi", "hallucination"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Security",
+  "Typing :: Typed",
+]
+# NFR-Mant.2: cero dependencias de runtime (solo stdlib) para reducir la propia
+# superficie de supply-chain de una herramienta de seguridad.
+dependencies = []
+
+[project.scripts]
+slopguard = "slopguard.cli.main:main"
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.8",
+  "ruff>=0.5",
+  "pytest>=8",
+  "pytest-cov>=5",
+  "import-linter>=2",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+slopguard = ["py.typed", "core/dataset/*.json", "core/dataset/*.sha256"]
+
+# --- Calidad: lint (ruff) ---------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# F=pyflakes, E/W=pycodestyle, I=isort, B=bugbear, S=flake8-bandit (seguridad),
+# UP=pyupgrade, PL=pylint, RUF=ruff. S prohibe eval/exec/pickle/marshal (NFR-Seg.1-2).
+select = ["E", "W", "F", "I", "B", "S", "UP", "PL", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# En tests se permiten asserts (S101) y literales "magicos" (PLR2004).
+"tests/**" = ["S101", "PLR2004", "PLR0915", "PLR0913"]
+
+# --- Calidad: tipado estricto (mypy) ---------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# --- Pruebas ----------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --cov-fail-under=90: piso de cobertura global (NFR-Mant.1, T02/T03).
+# Solo activo cuando se pasa --cov (en CI o localmente con el flag explicito).
+addopts = "--strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["slopguard"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# Piso global declarado aqui para que `coverage report` tambien falle si baja.
+# El gate de CI lo refuerza con --cov-fail-under=90 en pytest (T03).
+fail_under = 90
+
+# --- Contratos de arquitectura (import-linter) -----------------------------
+# Verifican por analisis estatico la frontera de extensibilidad (R10) y el
+# desacople core/CLI. Hacen fallar el build si una capa cruza la frontera.
+[tool.importlinter]
+root_package = "slopguard"
+
+[[tool.importlinter.contracts]]
+name = "El core no depende de la CLI (R10.3)"
+type = "forbidden"
+source_modules = ["slopguard.core"]
+forbidden_modules = ["slopguard.cli"]
+
+[[tool.importlinter.contracts]]
+name = "Capas y scoring no dependen de PyPI ni de la red (R10.1)"
+type = "forbidden"
+source_modules = ["slopguard.core.layers", "slopguard.core.scoring"]
+forbidden_modules = ["slopguard.core.adapters.pypi", "slopguard.core.net"]

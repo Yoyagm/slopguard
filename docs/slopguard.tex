@@ -9,6 +9,11 @@
   \usepackage{fontspec}
 \fi
 
+% '_' literal en modo texto: permite identificadores con guion bajo dentro de
+% \texttt{...} (p.ej. layer0_existence.py) sin escaparlos, conservando el
+% subindice en modo matematico.
+\usepackage{underscore}
+
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{amssymb}
 \usepackage{booktabs}
@@ -65,9 +70,9 @@ prioriza la \textbf{minimización de falsos positivos} como métrica de primera 
 \textbf{degradación segura}: ante un fallo de red, nunca reporta un falso «todo bien».
 
 \medskip
-\noindent\textbf{Resultados del Hito 1 (implementación final):} 617 pruebas en verde,
+\noindent\textbf{Resultados del Hito 1 (implementación final):} 619 pruebas en verde,
 cobertura global 95{,}3\,\% ($\geq 90\,\%$ requerido), cobertura en paquetes críticos
-99\,\% ($\geq 95\,\%$ requerido); \lstinline{mypy --strict} limpio; 2 contratos de
+99\,\% ($\geq 95\,\%$ requerido); \texttt{mypy --strict} limpio; 2 contratos de
 import-linter verificados; lint ruff sin errores. CI en GitHub Actions sobre Python
 3.11 y 3.12.
 \end{abstract}
@@ -78,7 +83,7 @@ import-linter verificados; lint ruff sin errores. CI en GitHub Actions sobre Pyt
 % ===========================================================================
 \section{Introducción y problema}
 
-Los asistentes de IA sugieren con frecuencia comandos \lstinline{pip install} que
+Los asistentes de IA sugieren con frecuencia comandos \texttt{pip install} que
 incluyen nombres de paquetes \emph{inexistentes}: alrededor del 20\,\% de los nombres
 sugeridos no existen y una fracción significativa son \emph{near-misses} de paquetes
 populares (USENIX Security 2025). Los atacantes pre-registran esos nombres alucinados
@@ -86,7 +91,7 @@ con código malicioso ---técnica conocida como \emph{slopsquatting}---, de modo
 desarrollador que copia el comando sin verificar instala el paquete del atacante.
 
 El único detector de código abierto previo es trivial: comprueba únicamente que PyPI
-responda \lstinline{200} para el nombre, sin análisis de similaridad ni de metadatos.
+responda \texttt{200} para el nombre, sin análisis de similaridad ni de metadatos.
 SlopGuard cubre ese hueco con un análisis multicapa, determinista y explicable.
 
 \paragraph{Usuarios objetivo.}
@@ -123,16 +128,16 @@ embeddings o modelos ML.
 \subsection{Principios}
 El sistema se divide en dos mitades con un contrato único:
 \begin{itemize}[nosep]
-  \item \textbf{Core} (\lstinline{slopguard.core}): lógica pura y determinista, con
+  \item \textbf{Core} (\texttt{slopguard.core}): lógica pura y determinista, con
   \textbf{cero dependencias de runtime} (solo biblioteca estándar) y \textbf{cero}
   \emph{imports} de la CLI. Expone una API pública congelada.
-  \item \textbf{Frontend} (\lstinline{slopguard.cli}): \emph{argparse}, render
+  \item \textbf{Frontend} (\texttt{slopguard.cli}): \emph{argparse}, render
   humano/JSON, saneo de salida y mapeo a \emph{exit code}. No reimplementa reglas de
   dominio.
 \end{itemize}
 
 El motor de capas y \emph{scoring} nunca habla con PyPI: depende de la interfaz
-\lstinline{EcosystemAdapter} y del modelo normalizado \lstinline{PackageMetadata}.
+\texttt{EcosystemAdapter} y del modelo normalizado \texttt{PackageMetadata}.
 Añadir npm equivale a un adaptador nuevo, sin tocar capas ni \emph{scoring}.
 
 \subsection{Componentes principales}
@@ -142,41 +147,41 @@ Añadir npm equivale a un adaptador nuevo, sin tocar capas ni \emph{scoring}.
 \toprule
 \textbf{Componente} & \textbf{Módulo} & \textbf{Responsabilidad} \\
 \midrule
-Normalización & \lstinline{core/normalize.py} & PEP 503, saneo, acotado de longitud \\
-Parsers & \lstinline{core/manifests/*} & requirements / pyproject / freeze; dedup; includes \\
-Adaptador (interfaz) & \lstinline{core/adapters/base.py} & \lstinline{EcosystemAdapter}, modelos normalizados \\
-Adaptador PyPI & \lstinline{core/adapters/pypi.py} & \lstinline{fetch()} seguro; PyPI JSON $\rightarrow$ normalizado \\
-HTTP seguro & \lstinline{core/net/http_client.py} & TLS + allowlist + redirect + streaming \\
-JSON seguro & \lstinline{core/net/safe_json.py} & \lstinline{safe_json_loads(max_depth)} \\
-Caché en disco & \lstinline{core/cache/disk_cache.py} & JSON-only, atómica, perms, TTL \\
-Capa 0 & \lstinline{core/layers/layer0_existence.py} & existencia + edad \\
-Capa 1 & \lstinline{core/layers/layer1_similarity.py} & \emph{typosquatting} DL+JW vs top-N \\
-Capa 2 & \lstinline{core/layers/layer2_metadata.py} & metadatos (aporte acotado) \\
-Dataset & \lstinline{core/dataset/top_n.py} & carga + verificación de \emph{checksum} \\
-Scoring & \lstinline{core/scoring/scorer.py} & combina señales $\rightarrow$ 0--100 \\
-Veredicto/exit & \lstinline{core/scoring/verdict.py} & umbrales, override, agregación \emph{exit} \\
-Config & \lstinline{core/config.py} & TOML + precedencia + validación de rangos \\
-Orquestador & \lstinline{core/engine.py} & manifiesto $\rightarrow \dots \rightarrow$ \lstinline{ScanReport} \\
-CLI & \lstinline{cli/*} & argparse, render humano/JSON, mapeo exit \\
+Normalización & \texttt{core/normalize.py} & PEP 503, saneo, acotado de longitud \\
+Parsers & \texttt{core/manifests/*} & requirements / pyproject / freeze; dedup; includes \\
+Adaptador (interfaz) & \texttt{core/adapters/base.py} & \texttt{EcosystemAdapter}, modelos normalizados \\
+Adaptador PyPI & \texttt{core/adapters/pypi.py} & \texttt{fetch()} seguro; PyPI JSON $\rightarrow$ normalizado \\
+HTTP seguro & \texttt{core/net/http_client.py} & TLS + allowlist + redirect + streaming \\
+JSON seguro & \texttt{core/net/safe_json.py} & \texttt{safe_json_loads(max_depth)} \\
+Caché en disco & \texttt{core/cache/disk_cache.py} & JSON-only, atómica, perms, TTL \\
+Capa 0 & \texttt{core/layers/layer0_existence.py} & existencia + edad \\
+Capa 1 & \texttt{core/layers/layer1_similarity.py} & \emph{typosquatting} DL+JW vs top-N \\
+Capa 2 & \texttt{core/layers/layer2_metadata.py} & metadatos (aporte acotado) \\
+Dataset & \texttt{core/dataset/top_n.py} & carga + verificación de \emph{checksum} \\
+Scoring & \texttt{core/scoring/scorer.py} & combina señales $\rightarrow$ 0--100 \\
+Veredicto/exit & \texttt{core/scoring/verdict.py} & umbrales, override, agregación \emph{exit} \\
+Config & \texttt{core/config.py} & TOML + precedencia + validación de rangos \\
+Orquestador & \texttt{core/engine.py} & manifiesto $\rightarrow \dots \rightarrow$ \texttt{ScanReport} \\
+CLI & \texttt{cli/*} & argparse, render humano/JSON, mapeo exit \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \subsection{Contratos de arquitectura (verificados por \texttt{import-linter})}
 
-Dos contratos declarados en \lstinline{pyproject.toml} hacen fallar el build si se
+Dos contratos declarados en \texttt{pyproject.toml} hacen fallar el build si se
 cruza una frontera:
 \begin{itemize}[nosep]
-  \item \lstinline{core.*} \;$\not\rightarrow$\; \lstinline{cli.*} (el core no depende
+  \item \texttt{core.*} \;$\not\rightarrow$\; \texttt{cli.*} (el core no depende
   de la CLI — R10.3).
-  \item \lstinline{core.layers.*}, \lstinline{core.scoring.*} \;$\not\rightarrow$\;
-  \lstinline{core.adapters.pypi}, \lstinline{core.net.*} (las capas solo dependen de
-  \lstinline{adapters.base} — R10.1).
+  \item \texttt{core.layers.*}, \texttt{core.scoring.*} \;$\not\rightarrow$\;
+  \texttt{core.adapters.pypi}, \texttt{core.net.*} (las capas solo dependen de
+  \texttt{adapters.base} — R10.1).
 \end{itemize}
-Una regla de \emph{lint} (ruff/bandit) prohíbe \lstinline{eval}/\lstinline{exec}/
-\lstinline{pickle}/\lstinline{marshal} sobre datos externos (NFR-Seg.2). Un test AST
-independiente verifica además que el core no use \lstinline{importlib} ni
-\lstinline{__import__} sobre nombres provenientes del manifiesto (NFR-Seg.1).
+Una regla de \emph{lint} (ruff/bandit) prohíbe \texttt{eval}/\texttt{exec}/
+\texttt{pickle}/\texttt{marshal} sobre datos externos (NFR-Seg.2). Un test AST
+independiente verifica además que el core no use \texttt{importlib} ni
+\texttt{__import__} sobre nombres provenientes del manifiesto (NFR-Seg.1).
 
 % ===========================================================================
 \section{Modelo de resultado}
@@ -184,31 +189,31 @@ independiente verifica además que el core no use \lstinline{importlib} ni
 Para eliminar ambigüedad, el sistema distingue conceptos ortogonales:
 \begin{itemize}[nosep]
   \item \textbf{score}: entero 0--100, solo para dependencias \emph{verificables}.
-    Si el paquete no existe (404) el \emph{score} es \lstinline{null}: el veredicto
+    Si el paquete no existe (404) el \emph{score} es \texttt{null}: el veredicto
     se asigna por \emph{override}, fuera de la función de \emph{scoring}.
-  \item \textbf{verdict}: \lstinline{allow} \textbar{} \lstinline{warn} \textbar{}
-  \lstinline{block} (derivado del \emph{score} o por \emph{override}).
-    Inexistencia (404) $\Rightarrow$ \lstinline{verdict=block} con \lstinline{score=null},
-    independiente de \lstinline{umbral_block}.
-  \item \textbf{status}: \lstinline{ok} (la verificación se completó) \textbar{}
-  \lstinline{unverifiable} (no se pudo verificar; sin \emph{score}, nunca
-  \lstinline{allow}).
-  \item \textbf{error\_category}: \lstinline{manifest_parse}, \lstinline{invalid_config},
-  \lstinline{network_unverifiable}, \lstinline{dataset_integrity}.
+  \item \textbf{verdict}: \texttt{allow} \textbar{} \texttt{warn} \textbar{}
+  \texttt{block} (derivado del \emph{score} o por \emph{override}).
+    Inexistencia (404) $\Rightarrow$ \texttt{verdict=block} con \texttt{score=null},
+    independiente de \texttt{umbral_block}.
+  \item \textbf{status}: \texttt{ok} (la verificación se completó) \textbar{}
+  \texttt{unverifiable} (no se pudo verificar; sin \emph{score}, nunca
+  \texttt{allow}).
+  \item \textbf{error\_category}: \texttt{manifest_parse}, \texttt{invalid_config},
+  \texttt{network_unverifiable}, \texttt{dataset_integrity}.
 \end{itemize}
 
 \paragraph{Clasificación de fallos de red.}
 \begin{itemize}[nosep]
-  \item \textbf{Transitorio} (reintentable; al agotar $\Rightarrow$ \lstinline{unverifiable}):
-    timeout de conexión/lectura, conexión caída/reset, \lstinline{5xx}.
-  \item \textbf{Permanente no reintentable:} \lstinline{404} $\Rightarrow$
-    \lstinline{NOT_FOUND} (no es error). \lstinline{403}, \lstinline{410} y cualquier
-    \lstinline{4xx != 404} $\Rightarrow$ \lstinline{unverifiable} (nunca
-    \lstinline{allow}).
+  \item \textbf{Transitorio} (reintentable; al agotar $\Rightarrow$ \texttt{unverifiable}):
+    timeout de conexión/lectura, conexión caída/reset, \texttt{5xx}.
+  \item \textbf{Permanente no reintentable:} \texttt{404} $\Rightarrow$
+    \texttt{NOT_FOUND} (no es error). \texttt{403}, \texttt{410} y cualquier
+    \texttt{4xx != 404} $\Rightarrow$ \texttt{unverifiable} (nunca
+    \texttt{allow}).
   \item \textbf{Anomalía de seguridad:} redirección cross-scheme/cross-host,
-    \lstinline{Content-Length} excesivo, cuerpo $>$ \lstinline{max_response_bytes},
-    profundidad JSON $>$ \lstinline{max_json_depth}, bomba de descompresión
-    $\Rightarrow$ \lstinline{NetworkUnverifiableError} $\Rightarrow$ \lstinline{unverifiable}.
+    \texttt{Content-Length} excesivo, cuerpo $>$ \texttt{max_response_bytes},
+    profundidad JSON $>$ \texttt{max_json_depth}, bomba de descompresión
+    $\Rightarrow$ \texttt{NetworkUnverifiableError} $\Rightarrow$ \texttt{unverifiable}.
 \end{itemize}
 
 \paragraph{Exit codes (precedencia R7.5).}
@@ -218,15 +223,15 @@ Para eliminar ambigüedad, el sistema distingue conceptos ortogonales:
 \toprule
 \textbf{Código} & \textbf{Significado} & \textbf{Condición} \\
 \midrule
-0 & allow & todo \lstinline{allow}, sin \emph{warn}/\emph{block}/\emph{unverifiable} \\
-1 & warn & $\geq 1$ \emph{warn}, sin \emph{block} ni \emph{unverifiable} (sin \lstinline{--strict}) \\
-2 & block & $\geq 1$ \emph{block} (señal dominante); o cualquier \emph{warn} con \lstinline{--strict} \\
+0 & allow & todo \texttt{allow}, sin \emph{warn}/\emph{block}/\emph{unverifiable} \\
+1 & warn & $\geq 1$ \emph{warn}, sin \emph{block} ni \emph{unverifiable} (sin \texttt{--strict}) \\
+2 & block & $\geq 1$ \emph{block} (señal dominante); o cualquier \emph{warn} con \texttt{--strict} \\
 3 & operacional & error total (manifiesto/config/dataset) \textbf{o} $\geq 1$ \emph{unverifiable} sin \emph{block} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent Precedencia: \lstinline{block (2) > operacional/unverifiable (3) > warn (1) > allow (0)}.
+\noindent Precedencia: \texttt{block (2) > operacional/unverifiable (3) > warn (1) > allow (0)}.
 Un \emph{block} confirmado domina sobre una verificación incompleta. Los \emph{unverifiable}
 siempre se reportan en la salida aunque el exit code sea 2.
 
@@ -243,33 +248,33 @@ return 0
 \section{Capas de detección}
 
 \paragraph{Capa 0 --- existencia y edad.} Si el paquete no existe en PyPI (404) se
-emite la señal \lstinline{NONEXISTENT} y el veredicto pasa a \lstinline{block} por
+emite la señal \texttt{NONEXISTENT} y el veredicto pasa a \texttt{block} por
 \emph{override} (fuera de la función de \emph{scoring}), independiente de
-\lstinline{umbral_block}. Si existe pero su primera \emph{release} es más reciente que
-\lstinline{edad_minima_dias} días, se emite la señal \textbf{blanda}
-\lstinline{NEW_PACKAGE} (+15 puntos), que contribuye al \emph{score} pero
+\texttt{umbral_block}. Si existe pero su primera \emph{release} es más reciente que
+\texttt{edad_minima_dias} días, se emite la señal \textbf{blanda}
+\texttt{NEW_PACKAGE} (+15 puntos), que contribuye al \emph{score} pero
 \textbf{nunca bloquea por sí sola} (invariante anti-FP). La edad se deriva de
-\lstinline{metadata.first_release_epoch} y de un \lstinline{now_epoch}
+\texttt{metadata.first_release_epoch} y de un \texttt{now_epoch}
 \textbf{inyectado una vez por corrida} (determinismo reproducible en tests).
 
 \paragraph{Capa 1 --- \emph{typosquatting}.} Se calcula la similaridad del nombre contra
 el dataset embebido del top-N de PyPI usando Damerau--Levenshtein (DL) y
 Jaro--Winkler (JW). Una entrada dispara señal si $1 \le \mathrm{DL} \le
 \mathtt{dl\_max}$ \textbf{o} $\mathrm{JW} \ge \mathtt{jw\_min}$. El coste cuadrático se
-acota con prefiltros sobre índices precomputados del \lstinline{TopNDataset}: banda de
+acota con prefiltros sobre índices precomputados del \texttt{TopNDataset}: banda de
 longitud $[L \pm \mathtt{dl\_max}]$ para DL; primer carácter para JW. Nombres de
 $\le 3$ caracteres no emiten señal (R3.5); nombres más largos que
-\lstinline{nombre_max_chars} se marcan \lstinline{NAME\_UNTRUSTED} sin ejecutar
+\texttt{nombre_max_chars} se marcan \texttt{NAME\_UNTRUSTED} sin ejecutar
 distancias (anti-DoS cuadrático). El candidato objetivo se elige por menor DL $\to$
 mayor JW $\to$ nombre ascendente (desempate determinista).
 
 \paragraph{Capa 2 --- metadatos.} Solo fuentes de la PyPI JSON API normalizada. Se emite
-\lstinline{WEAK_METADATA} (+7) si el paquete tiene $\le$ \lstinline{releases_min}
-\emph{releases} \textbf{y} le faltan $\ge$ \lstinline{metadata_faltantes_min} campos
+\texttt{WEAK_METADATA} (+7) si el paquete tiene $\le$ \texttt{releases_min}
+\emph{releases} \textbf{y} le faltan $\ge$ \texttt{metadata_faltantes_min} campos
 del conjunto cerrado \{descripción, autor, licencia, clasificadores\}; y
-\lstinline{LOW_VERIFIABILITY} (+5) si no enlaza repositorio. El aporte total de la
-Capa 2 está \textbf{acotado} a \lstinline{c2_max_contrib} puntos (cap duro). Cuando
-un paquete tiene $\ge$ \lstinline{releases_populares} releases, repo enlazado y
+\texttt{LOW_VERIFIABILITY} (+5) si no enlaza repositorio. El aporte total de la
+Capa 2 está \textbf{acotado} a \texttt{c2_max_contrib} puntos (cap duro). Cuando
+un paquete tiene $\ge$ \texttt{releases_populares} releases, repo enlazado y
 metadatos completos, el cap se aplica igualmente, evitando falsos positivos por
 popularidad baja relativa.
 
@@ -279,7 +284,7 @@ popularidad baja relativa.
 El \emph{score} es un modelo \textbf{aditivo con saturación} que separa señales
 \textbf{duras} (basadas en el nombre; cruzan a \emph{warn}/\emph{block}) de
 \textbf{blandas} (corroborantes, acotadas). Las señales TYPOSQUAT y NAME\_UNTRUSTED son
-\textbf{mutuamente excluyentes}: si el nombre supera \lstinline{nombre_max_chars}, se
+\textbf{mutuamente excluyentes}: si el nombre supera \texttt{nombre_max_chars}, se
 emite NAME\_UNTRUSTED sin ejecutar los algoritmos de distancia.
 
 \begin{center}
@@ -292,11 +297,11 @@ Dura & TYPOSQUAT (DL $=1$, mejor candidato top-N) & 60 \\
 Dura & TYPOSQUAT (DL $=2$) & 40 \\
 Dura & TYPOSQUAT (DL $>$ dl\_max \textbf{y} JW $\ge 0.95$) & 30 \\
 Dura & TYPOSQUAT (DL $>$ dl\_max \textbf{y} $0.92 \le$ JW $< 0.95$) & 25 \\
-Dura & NAME\_UNTRUSTED ($\mathtt{len} >$ \lstinline{nombre_max_chars}) & 30 \\
-Blanda & NEW\_PACKAGE (primera release $<$ \lstinline{edad_minima_dias} días) & $+15$ \\
+Dura & NAME\_UNTRUSTED ($\mathtt{len} >$ \texttt{nombre_max_chars}) & 30 \\
+Blanda & NEW\_PACKAGE (primera release $<$ \texttt{edad_minima_dias} días) & $+15$ \\
 Blanda & WEAK\_METADATA (releases escasas y campos ausentes) & $+7$ \\
 Blanda & LOW\_VERIFIABILITY (sin repositorio enlazado) & $+5$ \\
-Blanda & \textit{Capa 2 total} (cap duro: min(WEAK+LOW, \lstinline{c2_max_contrib})) & $\le 10$ \\
+Blanda & \textit{Capa 2 total} (cap duro: min(WEAK+LOW, \texttt{c2_max_contrib})) & $\le 10$ \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -309,24 +314,24 @@ donde $\mathtt{blandas} = \mathtt{NEW\_PACKAGE} + \min(\mathtt{WEAK\_METADATA} +
 \mathtt{LOW\_VERIFIABILITY},\; \mathtt{c2\_max\_contrib})$.
 
 \paragraph{Invariante anti-FP (núcleo del diseño).} La suma máxima de señales blandas es
-$15 + 10 = 25$, estrictamente \textbf{menor} que \lstinline{umbral_warn} $= 50$. Por tanto
+$15 + 10 = 25$, estrictamente \textbf{menor} que \texttt{umbral_warn} $= 50$. Por tanto
 \emph{ninguna} combinación de señales blandas por sí sola puede producir \emph{warn} ni
 \emph{block}: un paquete que \textbf{existe} y \textbf{no} dispara \emph{typosquat} nunca
-supera 25 y siempre resulta \lstinline{allow}. Esta propiedad se verifica por test de
-invariante (sin señal dura ni inexistencia $\Rightarrow$ \lstinline{score} $\le 49$).
+supera 25 y siempre resulta \texttt{allow}. Esta propiedad se verifica por test de
+invariante (sin señal dura ni inexistencia $\Rightarrow$ \texttt{score} $\le 49$).
 
 \paragraph{Condición efectiva de \emph{block} ($\ge 80$).} Como las blandas suman $\le 25$,
 alcanzar $\ge 80$ requiere una señal dura $\ge 55$, es decir \textbf{solo DL$=1$} (peso 60),
 más $\ge 20$ de blandas. En palabras: \emph{bloqueo automático} $\iff$ nombre a una edición
 de un paquete popular \textbf{y} recién publicado \textbf{y} con metadatos débiles. Esa
 conjunción es la firma de un \emph{typosquat} real. Un paquete establecido con DL$=1$ (p.\,ej.
-\lstinline{attr} vs \lstinline{attrs}) no es nuevo ni débil $\Rightarrow$ \emph{score} $\approx 60$
-$\Rightarrow$ \lstinline{warn} (humano confirma), nunca \emph{block}.
+\texttt{attr} vs \texttt{attrs}) no es nuevo ni débil $\Rightarrow$ \emph{score} $\approx 60$
+$\Rightarrow$ \texttt{warn} (humano confirma), nunca \emph{block}.
 
-\paragraph{Casos de \emph{score} nulo.} Inexistencia (404): \lstinline{verdict=block},
-\lstinline{score=null} (\emph{override}, independiente de \lstinline{umbral_block}).
-\lstinline{unverifiable}: \lstinline{status=unverifiable}, \lstinline{score=null},
-\lstinline{verdict=null}, nunca \lstinline{allow}.
+\paragraph{Casos de \emph{score} nulo.} Inexistencia (404): \texttt{verdict=block},
+\texttt{score=null} (\emph{override}, independiente de \texttt{umbral_block}).
+\texttt{unverifiable}: \texttt{status=unverifiable}, \texttt{score=null},
+\texttt{verdict=null}, nunca \texttt{allow}.
 
 % ===========================================================================
 \section{Propiedades de seguridad verificadas}
@@ -337,25 +342,25 @@ tests AST) o por tests de comportamiento con servidor local malicioso (T15):
 
 \begin{itemize}[nosep]
   \item \textbf{Nunca ejecuta código de los paquetes analizados}: solo inspecciona
-  metadatos. Sin \lstinline{eval}/\lstinline{exec}/\lstinline{pickle}/\lstinline{marshal}
-  sobre datos externos (ruff/bandit, NFR-Seg.2). Sin \lstinline{importlib} ni
-  \lstinline{__import__} sobre nombres del manifiesto (test AST, NFR-Seg.1).
+  metadatos. Sin \texttt{eval}/\texttt{exec}/\texttt{pickle}/\texttt{marshal}
+  sobre datos externos (ruff/bandit, NFR-Seg.2). Sin \texttt{importlib} ni
+  \texttt{__import__} sobre nombres del manifiesto (test AST, NFR-Seg.1).
   \item \textbf{HTTP endurecido (ADR-03)}: solo HTTPS con verificación de certificado activa
-  (no desactivable), \emph{allowlist} de host restringida a \lstinline{pypi.org}, sin
+  (no desactivable), \emph{allowlist} de host restringida a \texttt{pypi.org}, sin
   redirecciones cross-scheme/cross-host, lectura \emph{streaming} acotada por
-  \lstinline{max_response_bytes}, mitigación de bombas de descompresión (descompresión
-  incremental con cota), \lstinline{safe_json_loads} con \lstinline{max_json_depth} (anti
-  JSON-bomb). Anomalías $\Rightarrow$ \lstinline{NetworkUnverifiableError} $\Rightarrow$
-  \lstinline{unverifiable} (nunca \lstinline{allow}).
+  \texttt{max_response_bytes}, mitigación de bombas de descompresión (descompresión
+  incremental con cota), \texttt{safe_json_loads} con \texttt{max_json_depth} (anti
+  JSON-bomb). Anomalías $\Rightarrow$ \texttt{NetworkUnverifiableError} $\Rightarrow$
+  \texttt{unverifiable} (nunca \texttt{allow}).
   \item \textbf{Caché segura (ADR-05)}: JSON exclusivamente (nunca \emph{pickle}), escritura
-  atómica (\lstinline{tempfile} + \lstinline{os.replace}), permisos 0700/0600, claves
-  \lstinline{sha256(ecosystem:name)} (anti \emph{path traversal} por construcción),
+  atómica (\texttt{tempfile} + \texttt{os.replace}), permisos 0700/0600, claves
+  \texttt{sha256(ecosystem:name)} (anti \emph{path traversal} por construcción),
   validación defensiva completa al leer (esquema, tipos, rangos, TTL $\Rightarrow$ miss
-  nunca crashear). \lstinline{unverifiable} no se persiste (no cachear fallos transitorios).
+  nunca crashear). \texttt{unverifiable} no se persiste (no cachear fallos transitorios).
   \item \textbf{Integridad del dataset (ADR-01/NFR-Seg.7)}: el top-N embebido lleva
-  \lstinline{version}, \lstinline{generated_at} y procedencia documentada; se verifica
+  \texttt{version}, \texttt{generated_at} y procedencia documentada; se verifica
   con SHA-256 al cargar. Dataset ausente/corrupto $\Rightarrow$
-  \lstinline{DatasetIntegrityError} (\lstinline{exit 3}), nunca Capa 1 limpia en silencio.
+  \texttt{DatasetIntegrityError} (\texttt{exit 3}), nunca Capa 1 limpia en silencio.
   \item \textbf{Anti-inyección de salida (R6.5)}: todo nombre o dato externo se sanea
   (ANSI CSI/SGR, controles C0/C1, CR/LF) en salida humana, logs y JSON. Sin rutas absolutas
   del sistema ni contenido del manifiesto en mensajes de error de CI.
@@ -380,23 +385,23 @@ slopguard scan requirements.txt --format json
 slopguard scan deps.txt --manifest-type requirements --umbral-block 75 --no-cache
 \end{lstlisting}
 
-\noindent\textbf{Flags principales:} \lstinline{--format \{human,json\}},
-\lstinline{--no-cache}, \lstinline{--strict}, \lstinline{--config <ruta>},
-\lstinline{--ecosystem pypi}, \lstinline{--manifest-type \{requirements,pyproject,freeze\}},
+\noindent\textbf{Flags principales:} \texttt{--format \{human,json\}},
+\texttt{--no-cache}, \texttt{--strict}, \texttt{--config <ruta>},
+\texttt{--ecosystem pypi}, \texttt{--manifest-type \{requirements,pyproject,freeze\}},
 y \emph{overrides} de umbrales/red. Precedencia: CLI $>$ archivo de config $>$
 \emph{defaults}.
 
 \paragraph{Escenarios representativos.}
 
 \begin{itemize}[nosep]
-  \item \lstinline{reqursts} (typosquat de \lstinline{requests}, DL$=1$)
-    $\Rightarrow$ \lstinline{verdict=block}, \lstinline{score=75+} si también es nuevo,
-    \lstinline{suspected_target="requests"}.
+  \item \texttt{reqursts} (typosquat de \texttt{requests}, DL$=1$)
+    $\Rightarrow$ \texttt{verdict=block}, \texttt{score=75+} si también es nuevo,
+    \texttt{suspected_target="requests"}.
   \item Paquete con nombre inventado / alucinado $\Rightarrow$ PyPI 404
-    $\Rightarrow$ \lstinline{verdict=block}, \lstinline{score=null} (override).
-  \item \lstinline{boto3}, \lstinline{requests}, \lstinline{django} (populares, existentes)
-    $\Rightarrow$ señales blandas mínimas $\Rightarrow$ \lstinline{verdict=allow}.
-  \item PyPI inaccesible $\Rightarrow$ \lstinline{status=unverifiable}, \lstinline{exit 3},
+    $\Rightarrow$ \texttt{verdict=block}, \texttt{score=null} (override).
+  \item \texttt{boto3}, \texttt{requests}, \texttt{django} (populares, existentes)
+    $\Rightarrow$ señales blandas mínimas $\Rightarrow$ \texttt{verdict=allow}.
+  \item PyPI inaccesible $\Rightarrow$ \texttt{status=unverifiable}, \texttt{exit 3},
     nunca falso «todo bien».
 \end{itemize}
 
@@ -431,12 +436,12 @@ y \emph{overrides} de umbrales/red. Precedencia: CLI $>$ archivo de config $>$
 \end{lstlisting}
 
 La salida JSON es estable, versionada y \textbf{sin marcas de tiempo} (determinismo
-garantizado para CI). El orden es determinista: primero \lstinline{unverifiable}, luego
-\lstinline{block}, luego \lstinline{warn}, luego \lstinline{allow}; a igual veredicto,
+garantizado para CI). El orden es determinista: primero \texttt{unverifiable}, luego
+\texttt{block}, luego \texttt{warn}, luego \texttt{allow}; a igual veredicto,
 por nombre normalizado ascendente.
 
 \paragraph{Uso como \emph{gate} de CI (GitHub Actions).}
-\begin{lstlisting}[language=yaml]
+\begin{lstlisting}[language=]
 - name: SlopGuard -- supply chain gate
   run: slopguard scan requirements.txt --strict --format json
   # exit 0: todo allow. exit 2: block (o warn con --strict).
@@ -444,7 +449,7 @@ por nombre normalizado ascendente.
 \end{lstlisting}
 
 \paragraph{Uso como \emph{hook} de pre-commit.}
-\begin{lstlisting}[language=yaml]
+\begin{lstlisting}[language=]
 # .pre-commit-config.yaml
 repos:
   - repo: local
@@ -468,27 +473,27 @@ repos:
 \textbf{Parámetro} & \textbf{Default} & \textbf{Uso} \\
 \midrule
 \endhead
-\lstinline{umbral_block} & 80 & corte de \emph{block} \\
-\lstinline{umbral_warn} & 50 & corte de \emph{warn} \\
-\lstinline{edad_minima_dias} & 90 & señal \emph{paquete nuevo} \\
-\lstinline{ttl_cache_horas} & 24 & vigencia de caché \\
-\lstinline{concurrencia_max} & 8 & \emph{workers} de red \\
-\lstinline{connect_timeout_s} & 5 & \emph{timeout} de conexión \\
-\lstinline{read_timeout_s} & 10 & \emph{timeout} de lectura \\
-\lstinline{reintentos_red} & 2 & reintentos con \emph{backoff} \\
-\lstinline{timeout_total_por_dep_s} & 30 & presupuesto por dependencia \\
-\lstinline{jw_min} & 0.92 & umbral Jaro--Winkler \\
-\lstinline{dl_max} & 2 & umbral Damerau--Levenshtein \\
-\lstinline{nombre_max_chars} & 100 & cota anti-DoS de longitud \\
-\lstinline{releases_min} & 1 & metadatos débiles \\
-\lstinline{metadata_faltantes_min} & 2 & metadatos débiles \\
-\lstinline{releases_populares} & 10 & umbral de popularidad \\
-\lstinline{c2_max_contrib} & 10 & cap de la Capa 2 \\
-\lstinline{max_manifest_bytes} & 5\,000\,000 & cota de tamaño \\
-\lstinline{max_deps} & 5000 & cota de dependencias \\
-\lstinline{max_response_bytes} & 10\,000\,000 & cota de respuesta HTTP \\
-\lstinline{max_json_depth} & 50 & cota anti JSON-bomb \\
-\lstinline{max_include_depth} & 10 & cota de includes \lstinline{-r}/\lstinline{-c} \\
+\texttt{umbral_block} & 80 & corte de \emph{block} \\
+\texttt{umbral_warn} & 50 & corte de \emph{warn} \\
+\texttt{edad_minima_dias} & 90 & señal \emph{paquete nuevo} \\
+\texttt{ttl_cache_horas} & 24 & vigencia de caché \\
+\texttt{concurrencia_max} & 8 & \emph{workers} de red \\
+\texttt{connect_timeout_s} & 5 & \emph{timeout} de conexión \\
+\texttt{read_timeout_s} & 10 & \emph{timeout} de lectura \\
+\texttt{reintentos_red} & 2 & reintentos con \emph{backoff} \\
+\texttt{timeout_total_por_dep_s} & 30 & presupuesto por dependencia \\
+\texttt{jw_min} & 0.92 & umbral Jaro--Winkler \\
+\texttt{dl_max} & 2 & umbral Damerau--Levenshtein \\
+\texttt{nombre_max_chars} & 100 & cota anti-DoS de longitud \\
+\texttt{releases_min} & 1 & metadatos débiles \\
+\texttt{metadata_faltantes_min} & 2 & metadatos débiles \\
+\texttt{releases_populares} & 10 & umbral de popularidad \\
+\texttt{c2_max_contrib} & 10 & cap de la Capa 2 \\
+\texttt{max_manifest_bytes} & 5\,000\,000 & cota de tamaño \\
+\texttt{max_deps} & 5000 & cota de dependencias \\
+\texttt{max_response_bytes} & 10\,000\,000 & cota de respuesta HTTP \\
+\texttt{max_json_depth} & 50 & cota anti JSON-bomb \\
+\texttt{max_include_depth} & 10 & cota de includes \texttt{-r}/\texttt{-c} \\
 \bottomrule
 \end{longtable}
 \end{center}
@@ -504,45 +509,45 @@ repos:
 \toprule
 \textbf{Métrica} & \textbf{Valor} & \textbf{Umbral requerido} \\
 \midrule
-Pruebas totales & 617 & todas en verde \\
+Pruebas totales & 619 & todas en verde \\
 Cobertura global (líneas + ramas) & 95{,}3\,\% & $\geq 90\,\%$ \\
 Cobertura paquetes críticos & 99\,\% & $\geq 95\,\%$ \\
-\lstinline{mypy --strict} & sin errores & sin errores \\
-\lstinline{ruff check} & sin errores & sin errores \\
-\lstinline{lint-imports} (2 contratos) & OK & OK \\
+\texttt{mypy --strict} & sin errores & sin errores \\
+\texttt{ruff check} & sin errores & sin errores \\
+\texttt{lint-imports} (2 contratos) & OK & OK \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 Los paquetes críticos verificados al $\ge 95\,\%$ son:
-\lstinline{core/net}, \lstinline{core/cache}, \lstinline{core/scoring},
-\lstinline{core/layers}, \lstinline{core/dataset}.
+\texttt{core/net}, \texttt{core/cache}, \texttt{core/scoring},
+\texttt{core/layers}, \texttt{core/dataset}.
 
 \subsection{Pipeline de CI/CD}
 
-El workflow \lstinline{.github/workflows/slopguard-ci.yml} ejecuta en GitHub Actions
+El workflow \texttt{.github/workflows/slopguard-ci.yml} ejecuta en GitHub Actions
 sobre una matriz Python 3.11/3.12:
 
 \begin{enumerate}[nosep]
   \item \textbf{Ruff} — lint + reglas de seguridad (bandit).
-  \item \textbf{Mypy} — tipado estricto (\lstinline{--strict}).
+  \item \textbf{Mypy} — tipado estricto (\texttt{--strict}).
   \item \textbf{Import-linter} — contratos de arquitectura R10.
-  \item \textbf{Pytest + cobertura global} — gate $\ge 90\,\%$ (\lstinline{--cov-fail-under=90}).
+  \item \textbf{Pytest + cobertura global} — gate $\ge 90\,\%$ (\texttt{--cov-fail-under=90}).
   \item \textbf{Cobertura de paquetes críticos} — gate $\ge 95\,\%$ sobre los 5 paquetes.
-  \item \textbf{Compilación LaTeX} — este documento a PDF (\lstinline{xelatex}) como artefacto.
+  \item \textbf{Compilación LaTeX} — este documento a PDF (\texttt{xelatex}) como artefacto.
 \end{enumerate}
 
 El build falla si cualquier gate no se cumple. Los umbrales de cobertura se declaran en
-\lstinline{pyproject.toml} (\lstinline{[tool.coverage.report].fail_under}) y en los
+\texttt{pyproject.toml} (\texttt{[tool.coverage.report].fail_under}) y en los
 pasos del CI, como única fuente de verdad.
 
 % ===========================================================================
 \section{Trazabilidad y hoja de ruta}
 
 Cada requisito (R1.1--R10.3 y todos los NFR) se mapea a uno o más componentes en el
-documento de diseño (\lstinline{specs/slopguard-hito1/design.md}, sección 6), sin
+documento de diseño (\texttt{specs/slopguard-hito1/design.md}, sección 6), sin
 requisitos huérfanos. La descomposición en tareas verificables vive en
-\lstinline{specs/slopguard-hito1/tasks.md}.
+\texttt{specs/slopguard-hito1/tasks.md}.
 
 \paragraph{Hitos siguientes.}
 \begin{itemize}[nosep]

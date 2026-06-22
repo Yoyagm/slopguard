@@ -655,48 +655,51 @@ def test_e2e_rendimiento_30_deps_cache_fria_bajo_t_ref() -> None:
     cota `wall <= T_ref` seria tautologica: incluso un servidor SIN latencia tarda
     ~0.4 s solo por el establecimiento de conexiones TCP locales y el montaje de la
     pool, no por la latencia inyectada. Para AISLAR la contribucion de la latencia
-    simulada se corre la MISMA carga dos veces: una con latencia 0 (linea base de
-    overhead puro de orquestacion+TCP) y otra con la latencia representativa. Se
-    asierta que `wall_latencia - wall_base` es del orden del piso de latencia: ese
-    DIFERENCIAL solo puede provenir de los sleeps inyectados en el servidor. Si la
-    herramienta ignorase la red (corrida instantanea) el diferencial seria ~0 y la
-    prueba fallaria; queda demostrado que la medicion esta dominada por la latencia
-    SIMULADA, no por el hardware/red reales.
+    simulada se corre la MISMA carga con concurrencia 8 (concurrente) y con
+    concurrencia 1 (serial): el serial no paraleliza la red y paga N sleeps, el
+    concurrente paga ceil(N/8). El AHORRO (serial - concurrente) es puro tiempo de
+    red simulada y solo puede provenir de los sleeps inyectados. Si la herramienta
+    ignorase la red, ambas corridas tardarian igual y el ahorro seria ~0: la prueba
+    fallaria. Este diferencial es robusto en CI ruidoso porque ambas corridas pagan
+    el mismo overhead fijo, a diferencia de comparar contra una linea base sin
+    latencia (que puede salir mas lenta por warmup y dar un diferencial negativo).
     """
     latency = _DEFAULT_LATENCY_S
     workers = 8
     # 30 paquetes populares (allow) con nombres que NO se parecen al top-N para que
     # el coste dominante sea la latencia de red simulada, no el scoring.
-    base_script: dict[str, Any] = {
-        f"e2eperfbase{i:02d}": _popular_payload() for i in range(_PERF_DEP_COUNT)
-    }
-    lat_script: dict[str, Any] = {
-        f"e2eperflat{i:02d}": _popular_payload() for i in range(_PERF_DEP_COUNT)
+    script: dict[str, Any] = {
+        f"e2eperf{i:02d}": _popular_payload() for i in range(_PERF_DEP_COUNT)
     }
 
-    # Linea base: overhead de orquestacion + TCP local SIN latencia inyectada.
-    wall_base = _run_perf_scan(base_script, latency_s=0.0, workers=workers)
-    # Corrida real: misma carga con la latencia representativa de red domestica.
-    wall_latency = _run_perf_scan(lat_script, latency_s=latency, workers=workers)
+    # Corrida concurrente (objetivo R9.8) y serial (concurrencia=1) sobre la MISMA
+    # carga y latencia. El ahorro proviene de los sleeps REALES del servidor, que
+    # ni la cobertura ni el jitter del runner inflan; ambas corridas pagan el mismo
+    # overhead fijo de orquestacion+TCP, asi que el DIFERENCIAL es robusto incluso
+    # en runners de CI ruidosos (no depende de una linea base que pueda salir mas
+    # lenta por warmup/contencion del scheduler).
+    wall_concurrent = _run_perf_scan(script, latency_s=latency, workers=workers)
+    wall_serial = _run_perf_scan(script, latency_s=latency, workers=1)
 
     serial_batches = -(-_PERF_DEP_COUNT // workers)  # ceil(30/8) = 4
-    latency_floor = serial_batches * latency  # 0.400 s
 
-    # Cota SUPERIOR (objetivo R9.8): overhead de orquestacion mantiene <= T_ref.
-    assert wall_latency <= _T_REF_S, (
-        f"wall-clock {wall_latency:.3f}s excede T_ref={_T_REF_S}s"
+    # Cota SUPERIOR (objetivo literal R9.8): overhead de orquestacion mantiene el
+    # wall-clock de la corrida concurrente <= T_ref bajo la latencia inyectada.
+    assert wall_concurrent <= _T_REF_S, (
+        f"wall-clock {wall_concurrent:.3f}s excede T_ref={_T_REF_S}s"
     )
 
-    # Cota INFERIOR por DIFERENCIAL (anti-tautologia): el sobrecosto frente a la
-    # linea base SIN latencia debe ser del orden del piso de latencia inyectada.
-    # Margen 0.5x para absorber jitter del scheduler sin volver vacua la cota; con
-    # latencia 0 el diferencial seria ~0 y esta asercion fallaria (lo verificamos
-    # en el probe de anti-vacuidad del informe).
-    latency_contribution = wall_latency - wall_base
-    assert latency_contribution >= latency_floor * 0.5, (
-        f"diferencial de latencia {latency_contribution:.3f}s "
-        f"(con={wall_latency:.3f}s, base={wall_base:.3f}s) por debajo del piso "
-        f"{latency_floor:.3f}s: la medicion NO esta dominada por la red simulada"
+    # Cota INFERIOR por DIFERENCIAL (anti-tautologia): el serial NO paraleliza la
+    # red y paga N sleeps; el concurrente paga ceil(N/workers). El ahorro es puro
+    # tiempo de red simulada => demuestra que el wall-clock esta dominado por la
+    # latencia y que el orquestador la paraleliza. Piso 0.5x del ahorro ideal para
+    # absorber jitter sin volver vacua la cota (con latencia 0 el ahorro seria ~0).
+    saved_floor = (_PERF_DEP_COUNT - serial_batches) * latency * 0.5  # (30-4)*0.1*0.5
+    latency_savings = wall_serial - wall_concurrent
+    assert latency_savings >= saved_floor, (
+        f"ahorro por concurrencia {latency_savings:.3f}s "
+        f"(serial={wall_serial:.3f}s, concurrente={wall_concurrent:.3f}s) por debajo "
+        f"del piso {saved_floor:.3f}s: la red simulada no domina o no se paraleliza"
     )
 
 

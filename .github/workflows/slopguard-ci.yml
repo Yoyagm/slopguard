@@ -72,7 +72,7 @@ jobs:
           latexmk_use_xelatex: true
 
       - name: Publicar PDF como artefacto
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: slopguard-doc-tecnico
           path: docs/slopguard.pdf

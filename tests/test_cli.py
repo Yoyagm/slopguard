@@ -182,10 +182,13 @@ def test_help_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_version_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:
     """El subcomando version imprime la version y retorna 0 (R7.1)."""
+    import slopguard
+
     code = main(["version"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "slopguard 0.1.0" in out
+    # Dinámico vs __version__ para no romper en futuros bumps de versión.
+    assert f"slopguard {slopguard.__version__}" in out
 
 
 def test_sin_subcomando_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:

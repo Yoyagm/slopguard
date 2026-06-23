@@ -294,7 +294,7 @@ def find_foreign_url_hosts(
             if host is None or not _DNS_HOST_RE.match(host):
                 continue
             if host not in allowlist:
-                violations.append(f"URL a host ajeno '{host}' en linea {node.lineno}")
+                violations.append(host)
     return violations
 
 
@@ -425,11 +425,11 @@ def test_guard2_url_exime_display_osv_pero_muerde_otros() -> None:
 
     other_display = 'REF = "https://cve.mitre.org/cgi-bin/cvename.cgi"\n'
     found = find_foreign_url_hosts(other_display)
-    assert found and "cve.mitre.org" in found[0], f"otro host de display debe morder: {found}"
+    assert "cve.mitre.org" in found, f"otro host de display debe morder: {found}"
 
     # El allowlist explicito SIN display sigue mordiendo osv.dev (la exencion es del default).
     strict = find_foreign_url_hosts(osv_display, allowlist=ALLOWLIST)
-    assert strict and "osv.dev" in strict[0], "con allowlist estricto osv.dev SI es violacion"
+    assert "osv.dev" in strict, "con allowlist estricto osv.dev SI es violacion"
 
 
 def test_allowlist_de_red_fijada_a_pypi_org(source_texts: dict[Path, str]) -> None:
@@ -501,7 +501,7 @@ def test_guard2_url_detecta_host_ajeno_e_ignora_pypi_y_docstrings() -> None:
     """
     evil = 'API = "https://evil.example.com/collect"\n'
     found = find_foreign_url_hosts(evil)
-    assert found and "evil.example.com" in found[0], f"no detecto host ajeno: {found}"
+    assert "evil.example.com" in found, f"no detecto host ajeno: {found}"
 
     # pypi.org (allowlist) en un literal real NO es violacion.
     allowed = 'BASE = "https://pypi.org/pypi/{name}/json"\n'

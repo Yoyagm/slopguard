@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import slopguard
 from slopguard.cli.exit_codes import EXIT_ALLOW, EXIT_BLOCK, EXIT_OPERATIONAL, EXIT_WARN
 from slopguard.cli.main import main
 from slopguard.cli.render_json import render_json
@@ -182,8 +183,6 @@ def test_help_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_version_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:
     """El subcomando version imprime la version y retorna 0 (R7.1)."""
-    import slopguard
-
     code = main(["version"])
     assert code == 0
     out = capsys.readouterr().out

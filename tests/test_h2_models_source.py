@@ -343,11 +343,26 @@ class TestThreatIntelSourceProtocol:
             )
 
     def test_threatintel_init_no_reexporta_impls(self) -> None:
-        """__init__.py del paquete threatintel esta vacio de logica (frontera R8.1 §1.3)."""
-        # No debe tener atributos de las impls concretas
+        """__init__.py del paquete threatintel esta vacio de logica (frontera R8.1 §1.3).
+
+        Se inspecciona el CODIGO FUENTE del `__init__.py`, no atributos en runtime: en
+        CPython, importar un submodulo (p.ej. lo hace el engine o un test de la impl) lo
+        BINDEA como atributo del paquete padre, de modo que `hasattr(ti_pkg, 'watchlist')`
+        seria True por el sistema de imports aunque `__init__.py` no re-exporte nada. El
+        contrato real ("el __init__ no re-exporta impls") se verifica leyendo su fuente:
+        no debe `import`-ar osv/watchlist/composite/resolver/registry ni listarlos en
+        `__all__`. La frontera dura ademas la ancla import-linter (§1.3), no este test.
+        """
+        init_path = Path(ti_pkg.__file__ or "")
+        source = init_path.read_text(encoding="utf-8")
+        # El __init__ no define __all__ (no re-exporta nada) y no importa las impls.
+        assert "__all__" not in source, "threatintel.__init__ declara __all__ (re-exporta)"
         for impl_name in ("osv", "watchlist", "composite", "resolver", "registry"):
-            assert not hasattr(ti_pkg, impl_name), (
-                f"threatintel.__init__ re-exporta '{impl_name}' (viola la frontera)"
+            assert f"import {impl_name}" not in source, (
+                f"threatintel.__init__ importa/re-exporta '{impl_name}' (viola la frontera)"
+            )
+            assert f"from .{impl_name}" not in source, (
+                f"threatintel.__init__ re-exporta de '.{impl_name}' (viola la frontera)"
             )
 
 

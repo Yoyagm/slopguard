@@ -48,6 +48,18 @@ _PYPROJECT = _PROJECT_ROOT / "pyproject.toml"
 # `core.net.http_client.ALLOWED_HOSTS`). Cualquier otro host literal es violacion.
 ALLOWLIST: frozenset[str] = frozenset({"pypi.org"})
 
+# Hosts de REFERENCIA/DISPLAY exentos del guardia de URLs literales (NFR-Priv.2).
+# `osv.dev` NO es un destino de red: es el host canonico de la pagina del advisory
+# (`https://osv.dev/vulnerability/<id>`) que `core/threatintel/osv.py` RECONSTRUYE
+# para mostrar al humano. La red OSV real va a `api.osv.dev`, gateada por la
+# allowlist efectiva del cliente HTTP (`extra_allowed_hosts`), nunca por este literal.
+# El guardia debe distinguir host de transporte (prohibido) de host de display
+# (legitimo): `osv.dev` se exime aqui, cualquier OTRO host ajeno se sigue detectando.
+_DISPLAY_HOSTS: frozenset[str] = frozenset({"osv.dev"})
+
+# Allowlist efectiva del detector de URLs literales = transporte permitido + display.
+_URL_HOST_ALLOWLIST: frozenset[str] = ALLOWLIST | _DISPLAY_HOSTS
+
 # Primitivas de ejecucion/import dinamico prohibidas como `Call` directo (NFR-Seg.1).
 _FORBIDDEN_CALLS: frozenset[str] = frozenset({"eval", "exec", "__import__"})
 
@@ -233,13 +245,18 @@ def find_third_party_import_violations(source: str) -> list[str]:
     return violations
 
 
-def find_foreign_url_hosts(source: str, *, allowlist: frozenset[str] = ALLOWLIST) -> list[str]:
+def find_foreign_url_hosts(
+    source: str, *, allowlist: frozenset[str] = _URL_HOST_ALLOWLIST
+) -> list[str]:
     """Hosts de URLs literales (no-docstring) fuera del allowlist. Vacia => limpio.
 
     Escanea SOLO literales de cadena que no sean docstrings, extrae el host de cada
     URL `http(s)://...` y reporta los que (a) son hostnames DNS validos y (b) no
-    pertenecen al allowlist. La prosa de docstrings se excluye a proposito.
-    Funcion PURA: parsea el texto recibido, sin red ni filesystem.
+    pertenecen al allowlist. El allowlist por defecto suma a `{pypi.org}` (transporte)
+    los hosts de DISPLAY (`osv.dev`): la URL canonica de un advisory OSV es una
+    referencia visible para humanos reconstruida en codigo, no un destino de red (la
+    red va a `api.osv.dev` via la allowlist efectiva del cliente). La prosa de
+    docstrings se excluye a proposito. Funcion PURA: parsea el texto, sin red ni FS.
     """
     tree = ast.parse(source)
     doc_ids = _docstring_nodes(tree)
@@ -358,13 +375,38 @@ def test_sin_sdks_de_terceros_ni_llm(source_texts: dict[Path, str]) -> None:
 
 
 def test_sin_urls_hardcodeadas_a_hosts_ajenos(source_texts: dict[Path, str]) -> None:
-    """NFR-Priv.2: ninguna URL literal apunta a un host fuera del allowlist {pypi.org}."""
+    """NFR-Priv.2: ninguna URL literal apunta a un host fuera del allowlist efectivo.
+
+    Allowlist efectivo = `{pypi.org}` (transporte) + `{osv.dev}` (display): la URL
+    canonica del advisory OSV (`https://osv.dev/vulnerability/<id>`) es una referencia
+    de display reconstruida en `core/threatintel/osv.py`, no un destino de red. Cualquier
+    OTRO host ajeno en un literal de codigo (incl. en osv.py) sigue siendo violacion.
+    """
     offending: dict[str, list[str]] = {}
     for path, text in source_texts.items():
         found = find_foreign_url_hosts(text)
         if found:
             offending[_rel(path)] = found
     assert offending == {}, f"URL hardcodeada a host ajeno (NFR-Priv.2): {offending}"
+
+
+def test_guard2_url_exime_display_osv_pero_muerde_otros() -> None:
+    """ANTI-VACUIDAD G2c-bis: `osv.dev` (display) se exime; otro host de display NO.
+
+    La exencion es ACOTADA a `osv.dev` (host canonico de la pagina del advisory que el
+    codigo reconstruye), no una puerta abierta: un literal a cualquier otro host de
+    'referencia' (p.ej. `cve.mitre.org`) se sigue detectando como violacion.
+    """
+    osv_display = 'BASE = "https://osv.dev/vulnerability/MAL-2025-1"\n'
+    assert find_foreign_url_hosts(osv_display) == [], "osv.dev (display) no debe morder"
+
+    other_display = 'REF = "https://cve.mitre.org/cgi-bin/cvename.cgi"\n'
+    found = find_foreign_url_hosts(other_display)
+    assert found and "cve.mitre.org" in found[0], f"otro host de display debe morder: {found}"
+
+    # El allowlist explicito SIN display sigue mordiendo osv.dev (la exencion es del default).
+    strict = find_foreign_url_hosts(osv_display, allowlist=ALLOWLIST)
+    assert strict and "osv.dev" in strict[0], "con allowlist estricto osv.dev SI es violacion"
 
 
 def test_allowlist_de_red_fijada_a_pypi_org(source_texts: dict[Path, str]) -> None:

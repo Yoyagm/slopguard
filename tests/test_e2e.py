@@ -53,6 +53,7 @@ from unittest.mock import patch
 import pytest
 
 import slopguard.core.adapters.pypi as pypi_mod
+import slopguard.core.engine as engine_mod
 import slopguard.core.net.http_client as http_mod
 from slopguard import core as sg
 from slopguard.core.config import Config
@@ -287,6 +288,13 @@ def _local_pypi_patches(port: int) -> Iterator[None]:
         patch.object(http_mod, "_reject_port_and_userinfo", lambda _parts: None),
         patch.object(SecureHttpClient, "__init__", _patched_http_init),
         patch.object(pypi_mod, "_PYPI_API_BASE", base),
+        # Estos e2e del Hito 1 ejercitan SOLO el servidor PyPI simulado (no OSV): se
+        # neutraliza la Capa 3 (threat-intel) a None para que el flujo sea idéntico al
+        # Hito 1 (enable_layer3=false ⇒ ti={}). Sin esto, el `Config()` por defecto
+        # instanciaría `OsvSource`, cuyo `SecureHttpClient(extra_allowed_hosts=...)`
+        # choca con el `__init__` parcheado (sin args). Los e2e de Capa 3 con servidor
+        # OSV simulado son H2-T20 (otro archivo de tester).
+        patch.object(engine_mod, "get_threatintel_source", lambda *a, **k: None),
     ):
         yield
 

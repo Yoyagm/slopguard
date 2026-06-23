@@ -48,6 +48,11 @@ if TYPE_CHECKING:
 # Ruta del símbolo a parchear (mypy-strict friendly, igual que test_concurrent.py).
 _GET_ADAPTER = "slopguard.core.engine.get_adapter"
 _ENGINE_TIME = "slopguard.core.engine.time.time"
+# Factory de la fuente de Capa 3 (Hito 2). Estos tests del Hito 1 NO ejercitan
+# threat-intel: se neutraliza a None (modo solo-deterministas) para que el flujo sea
+# idéntico al Hito 1 (enable_layer3=false ⇒ ti={}). Los tests de intercalado L3 viven
+# en `test_h2_engine.py` e inyectan su propia fuente stub.
+_GET_TI_SOURCE = "slopguard.core.engine.get_threatintel_source"
 
 # Epoch fijo (2024-06-01T00:00:00Z): edad reproducible en Capa 0 (NFR-Det.1).
 _NOW = 1_717_200_000.0
@@ -177,6 +182,20 @@ def _frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     corrida (NFR-Det.1): ver `test_now_epoch_se_inyecta_una_sola_vez`.
     """
     monkeypatch.setattr(_ENGINE_TIME, lambda: _NOW)
+
+
+@pytest.fixture(autouse=True)
+def _disable_layer3(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutraliza la Capa 3 (threat-intel) en los tests del Hito 1.
+
+    Parchea `engine.get_threatintel_source` para devolver None: `resolve_threatintel`
+    retorna `{}` sin tocar red ni caché, de modo que el flujo es IDÉNTICO al Hito 1
+    (enable_layer3=false ⇒ ti={}). Sin esto, el `Config()` por defecto
+    (`enable_layer3=True`) instanciaría `OsvSource` real e intentaría consultar OSV,
+    rompiendo el aislamiento sin red de estas integraciones. El intercalado de Capa 3
+    se prueba en `test_h2_engine.py` con una fuente stub inyectada.
+    """
+    monkeypatch.setattr(_GET_TI_SOURCE, lambda *a, **k: None)
 
 
 def _install_stub(

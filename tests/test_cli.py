@@ -771,11 +771,11 @@ def test_render_json_claves_segun_esquema() -> None:
     ]
     assert list(data.keys()) == expected_top
 
-    # Claves de un resultado
+    # Claves de un resultado (schema 1.1: se anio advisories al final de forma aditiva, §2.4)
     result = data["results"][0]
     expected_result = [
         "name", "version_pin", "status", "verdict", "score",
-        "suspected_target", "error_category", "signals",
+        "suspected_target", "error_category", "signals", "advisories",
     ]
     assert list(result.keys()) == expected_result
 

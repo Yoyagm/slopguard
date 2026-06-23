@@ -192,7 +192,6 @@ def test_safe_json_array_anidado_en_limite() -> None:
         "https://evil.com/pypi/requests/json",  # host fuera de allowlist
         "https://pypi.org.evil.com/x",  # host similar pero distinto
         "ftp://pypi.org/x",  # scheme arbitrario
-        "https://attacker@pypi.org.evil.com/x",  # userinfo enganosa
     ],
 )
 def test_url_fuera_de_allowlist_rechazada(url: str) -> None:
@@ -200,6 +199,21 @@ def test_url_fuera_de_allowlist_rechazada(url: str) -> None:
     with pytest.raises(NetworkUnverifiableError, match="allowlist"):
         client.get_json(
             url,
+            connect_timeout_s=1.0,
+            read_timeout_s=1.0,
+            max_response_bytes=1_000,
+            max_json_depth=10,
+        )
+
+
+def test_url_con_userinfo_rechazada_antes_de_allowlist() -> None:
+    # Una URL con userinfo enganoso (attacker@host) se rechaza por la nueva validacion
+    # A10 SSRF ANTES de consultar la allowlist (defecto-deniega temprano): el motivo del
+    # rechazo es el userinfo, no el host. Sigue degradando a NetworkUnverifiableError.
+    client = SecureHttpClient()
+    with pytest.raises(NetworkUnverifiableError, match="userinfo"):
+        client.get_json(
+            "https://attacker@pypi.org.evil.com/x",
             connect_timeout_s=1.0,
             read_timeout_s=1.0,
             max_response_bytes=1_000,
@@ -536,13 +550,28 @@ def test_url_ipv6_malformada_no_aborta_el_lote() -> None:
         )
 
 
-def test_url_ipv6_host_no_allowlist_rechazada() -> None:
-    # 'https://[::1]:notaport/x' SI parsea (urlsplit no accede a .port); el host ::1
-    # no esta en la allowlist => rechazo por allowlist. Igual no aborta el lote.
+def test_url_ipv6_con_puerto_rechazada_por_puerto() -> None:
+    # 'https://[::1]:99/x' lleva puerto explicito: la nueva validacion A10 SSRF lo
+    # rechaza ANTES de la allowlist (defecto-deniega). El loopback [::1] jamas debe ser
+    # alcanzable; el motivo del rechazo ahora es el puerto explicito. No aborta el lote.
+    client = SecureHttpClient()
+    with pytest.raises(NetworkUnverifiableError, match="puerto explicito"):
+        client.get_json(
+            "https://[::1]:99/x",
+            connect_timeout_s=1.0,
+            read_timeout_s=1.0,
+            max_response_bytes=10_000,
+            max_json_depth=10,
+        )
+
+
+def test_url_ipv6_loopback_sin_puerto_rechazada_por_allowlist() -> None:
+    # Sin puerto, el host loopback [::1] cae por allowlist (no esta en {pypi.org}); esto
+    # confirma que el rechazo de allowlist sigue activo para IPv6 desnudo. No aborta el lote.
     client = SecureHttpClient()
     with pytest.raises(NetworkUnverifiableError, match="allowlist"):
         client.get_json(
-            "https://[::1]:99/x",
+            "https://[::1]/x",
             connect_timeout_s=1.0,
             read_timeout_s=1.0,
             max_response_bytes=10_000,
@@ -723,10 +752,21 @@ class _LocalServer:
 def local_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_LocalServer]:
     """Servidor local + permiso de allowlist http://127.0.0.1 SOLO durante el test."""
 
-    def allow_local(scheme: str, host: str) -> bool:
+    def allow_local(
+        scheme: str, host: str, allowed_hosts: frozenset[str] | None = None
+    ) -> bool:
+        # Acepta el 3er parametro (allowlist EFECTIVA por-instancia, Hito 2) pero lo ignora:
+        # este harness habilita http://127.0.0.1 sin importar el conjunto efectivo.
         return scheme.lower() == "http" and host == "127.0.0.1"
 
+    def allow_local_port(_parts: object) -> None:
+        # El servidor loopback usa un puerto efimero asignado por el SO: el rechazo de
+        # puerto explicito (A10 SSRF, defecto-deniega en produccion) se neutraliza SOLO
+        # aqui, por necesidad tecnica del harness que ejercita el camino real de urllib.
+        return None
+
     monkeypatch.setattr(hc, "_is_allowed", allow_local)
+    monkeypatch.setattr(hc, "_reject_port_and_userinfo", allow_local_port)
     with _LocalServer() as server:
         yield server
 

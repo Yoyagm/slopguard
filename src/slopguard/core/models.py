@@ -20,6 +20,7 @@ class Layer(IntEnum):
     L0 = 0
     L1 = 1
     L2 = 2
+    L3 = 3  # NUEVO: threat-intel (Hito 2)
 
 
 class SignalCode(StrEnum):
@@ -31,6 +32,10 @@ class SignalCode(StrEnum):
     NAME_UNTRUSTED = "name_untrusted"  # L1, dura (nombre > nombre_max_chars)
     WEAK_METADATA = "weak_metadata"  # L2, blanda
     LOW_VERIFIABILITY = "low_verifiability"  # L2, blanda (sin repo enlazado)
+    # --- L3: threat-intel (Hito 2, aditivos) ---
+    MALICIOUS = "malicious"  # L3, DURA, override de block (ADR-06, weight=0)
+    KNOWN_HALLUCINATION = "known_hallucination"  # L3, DURA, weight=85 (ADR-07)
+    THREATINTEL_UNVERIFIABLE = "threatintel_unverifiable"  # L3, BLANDA, weight=0
 
 
 class Verdict(StrEnum):
@@ -80,6 +85,20 @@ class LayerSignal:
 
 
 @dataclass(frozen=True, slots=True)
+class Advisory:
+    """Advisory de malicia normalizado y saneado (nunca payload crudo de OSV).
+
+    El id y la url se construyen/validan antes de crear el objeto;
+    jamas se reflejan datos crudos de la red en este modelo.
+    """
+
+    id: str  # p.ej. "MAL-2025-47868" (validado: prefijo MAL-, charset acotado)
+    kind: str  # "malicious" (unica clase relevante en Hito 2)
+    url: str  # "https://osv.dev/vulnerability/<id>" (construido, no reflejado)
+    source: str  # "osv"
+
+
+@dataclass(frozen=True, slots=True)
 class DependencyResult:
     """Resultado de evaluar una dependencia."""
 
@@ -91,6 +110,7 @@ class DependencyResult:
     signals: tuple[LayerSignal, ...]
     suspected_target: str | None
     error_category: ErrorCategory | None
+    advisories: tuple[Advisory, ...] = ()  # NUEVO (Hito 2, aditivo, default=()==retro-compatible)
 
 
 @dataclass(frozen=True, slots=True)

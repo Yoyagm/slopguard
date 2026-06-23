@@ -1,13 +1,16 @@
 """Configuracion de SlopGuard: defaults, carga TOML y validacion de rangos.
 
-`Config` es la UNICA fuente de verdad de los defaults (tabla R8). `load_config`
-resuelve con precedencia CLI > archivo (`[tool.slopguard]` en pyproject.toml o
-`.slopguard.toml`) > defaults, y valida rangos: cualquier valor fuera de dominio
-aborta con `InvalidConfigError` (exit 3) SIN aplicar valores a medias (R8.3).
+`Config` es la UNICA fuente de verdad de los defaults (tabla R8 + tabla R5 Capa 3).
+`load_config` resuelve con precedencia CLI > archivo (`[tool.slopguard]` en
+pyproject.toml o `.slopguard.toml`) > defaults, y valida rangos: cualquier valor
+fuera de dominio aborta con `InvalidConfigError` (exit 3) SIN aplicar valores a
+medias (R8.3 / R5.2).
 """
 
 from __future__ import annotations
 
+import ipaddress
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,38 +18,88 @@ from pathlib import Path
 from typing import Any
 
 from .errors import InvalidConfigError
+from .normalize import sanitize_for_output
 
-# Campos numericos por tipo (clasificacion explicita = sin reflexion fragil).
+# ---------------------------------------------------------------------------
+# Clasificacion de campos por tipo (explicita = sin reflexion fragil).
+# Los nuevos campos de Capa 3 se anaden DESPUES de las constantes del Hito 1.
+# ---------------------------------------------------------------------------
+
+# Campos enteros: Hito 1 (sin cambios) + Capa 3.
 _INT_FIELDS: frozenset[str] = frozenset({
     "umbral_block", "umbral_warn", "edad_minima_dias", "ttl_cache_horas",
     "concurrencia_max", "reintentos_red", "dl_max", "nombre_max_chars",
     "releases_min", "metadata_faltantes_min", "releases_populares", "c2_max_contrib",
     "max_manifest_bytes", "max_deps", "max_response_bytes", "max_json_depth",
     "max_include_depth",
+    # Capa 3 (tabla R5):
+    "osv_batch_max", "osv_ttl_cache_horas", "osv_reintentos",
+    "watchlist_ttl_cache_horas",
 })
+
+# Campos float: Hito 1 (sin cambios) + Capa 3.
 _FLOAT_FIELDS: frozenset[str] = frozenset({
     "connect_timeout_s", "read_timeout_s", "timeout_total_por_dep_s", "jw_min",
+    # Capa 3 (tabla R5):
+    "osv_timeout_total_por_lote_s", "watchlist_timeout_total_s",
 })
-_KNOWN_FIELDS: frozenset[str] = _INT_FIELDS | _FLOAT_FIELDS
 
-# Parametros que deben ser estrictamente positivos (timeouts, limites, conteos
-# de capacidad). Los umbrales de conteo (releases_min, etc.) admiten 0.
+# Campos string nuevos de Capa 3 (hosts, rutas, modo de degradacion).
+_STR_FIELDS: frozenset[str] = frozenset({
+    "osv_host", "osv_query_path",
+    "watchlist_host", "watchlist_source_path",
+    "threatintel_degraded_status",
+})
+
+# Campos booleanos nuevos de Capa 3.
+_BOOL_FIELDS: frozenset[str] = frozenset({
+    "enable_layer3", "enable_watchlist",
+})
+
+# Union total de campos conocidos (rechaza cualquier clave ajena).
+_KNOWN_FIELDS: frozenset[str] = _INT_FIELDS | _FLOAT_FIELDS | _STR_FIELDS | _BOOL_FIELDS
+
+# ---------------------------------------------------------------------------
+# Parametros estrictamente positivos (> 0). Los umbrales de conteo admiten 0.
+# ---------------------------------------------------------------------------
 _STRICTLY_POSITIVE: frozenset[str] = frozenset({
     "edad_minima_dias", "ttl_cache_horas", "concurrencia_max", "reintentos_red",
     "connect_timeout_s", "read_timeout_s", "timeout_total_por_dep_s",
     "max_manifest_bytes", "max_deps", "max_response_bytes", "max_json_depth",
     "max_include_depth", "releases_populares",
+    # Capa 3:
+    "osv_batch_max", "osv_ttl_cache_horas", "osv_timeout_total_por_lote_s",
+    "watchlist_ttl_cache_horas", "watchlist_timeout_total_s",
 })
 
-# Cotas de dominio de R8.3 (nombradas para trazabilidad y claridad).
+# ---------------------------------------------------------------------------
+# Cotas de dominio (nombradas para trazabilidad).
+# ---------------------------------------------------------------------------
 _UMBRAL_MAX = 100
 _NOMBRE_MIN_CHARS = 4
+
+# Conjunto cerrado de hosts de Capa 3 permitidos (ADR-09 — anti-SSRF interno).
+_VALID_OSV_HOSTS: frozenset[str] = frozenset({"api.osv.dev"})
+_VALID_WATCHLIST_HOSTS: frozenset[str] = frozenset({"depscope.dev"})
+
+# Valores validos de threatintel_degraded_status (R5.2).
+_VALID_DEGRADED_STATUS: frozenset[str] = frozenset({"unverifiable", "warn"})
+
+# Charset de rutas de API: solo caracteres URL seguros sin CRLF/espacios.
+_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+
+# Charset de un label DNS (LDH: letras, digitos, guion); rechaza todo lo demas.
+_FQDN_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+# Minimo de labels para considerar un FQDN valido (ej: "host.tld" = 2 labels).
+_FQDN_MIN_LABELS: int = 2
 
 
 @dataclass(frozen=True, slots=True)
 class Config:
-    """Parametros de comportamiento. Defaults = tabla R8 (unica fuente de verdad)."""
+    """Parametros de comportamiento. Defaults = tabla R8 + tabla R5 Capa 3."""
 
+    # --- Hito 1 (sin cambios) ---
     umbral_block: int = 80
     umbral_warn: int = 50
     edad_minima_dias: int = 90
@@ -68,6 +121,21 @@ class Config:
     max_response_bytes: int = 10_000_000
     max_json_depth: int = 50
     max_include_depth: int = 10
+
+    # --- Capa 3 — tabla R5 (defaults identicos a la tabla, aditivos) ---
+    enable_layer3: bool = True
+    osv_host: str = "api.osv.dev"
+    osv_query_path: str = "/v1/querybatch"
+    osv_batch_max: int = 1000
+    osv_ttl_cache_horas: int = 6
+    osv_timeout_total_por_lote_s: float = 30.0
+    osv_reintentos: int = 2
+    enable_watchlist: bool = False
+    watchlist_host: str = "depscope.dev"
+    watchlist_source_path: str = "/api/benchmark/hallucinations"
+    watchlist_ttl_cache_horas: int = 24
+    watchlist_timeout_total_s: float = 30.0
+    threatintel_degraded_status: str = "unverifiable"
 
 
 def load_config(
@@ -131,8 +199,23 @@ def _build_and_validate(values: Mapping[str, object]) -> Config:
     return config
 
 
-def _coerce(key: str, raw: object) -> int | float:
-    """Valida el tipo de un valor. Rechaza booleanos (subclase de int)."""
+def _coerce(key: str, raw: object) -> int | float | str | bool:
+    """Valida el tipo de un valor. Bool antes de int (subclase); str antes de num.
+
+    Orden de ramas: bool → str → int → float (numerico general).
+    Los campos booleanos exigen `isinstance(raw, bool)` estricto: un 0/1 entero
+    se rechaza. Los campos string exigen no-vacio y se sanean de controles.
+    Los campos numericos del Hito 1 rechazan booleanos (subclase de int).
+    """
+    if key in _BOOL_FIELDS:
+        if not isinstance(raw, bool):
+            raise InvalidConfigError(f"'{key}' debe ser un booleano (true/false)")
+        return raw
+    if key in _STR_FIELDS:
+        if not isinstance(raw, str) or not raw.strip():
+            raise InvalidConfigError(f"'{key}' debe ser una cadena no vacia")
+        return sanitize_for_output(raw)
+    # Rama numerica: rechaza bool (subclase de int), igual que el Hito 1.
     if isinstance(raw, bool):
         raise InvalidConfigError(f"'{key}' no admite un booleano")
     if key in _INT_FIELDS:
@@ -144,8 +227,75 @@ def _coerce(key: str, raw: object) -> int | float:
     raise InvalidConfigError(f"'{key}' debe ser numerico")
 
 
+def _is_valid_https_host(host: str) -> bool:
+    """True si `host` es un FQDN https-seguro sin userinfo, puerto, path o IP.
+
+    Rechaza (anti-SSRF a host interno / metadata):
+    - Userinfo (`@`), puerto (`:`), path/query/fragment (`/`, `?`, `#`).
+    - Esquema embebido (`://`).
+    - Literales de IP (v4 o v6) segun `ipaddress.ip_address`.
+    - `localhost` y variantes.
+    - Labels con caracteres fuera del LDH (letras, digitos, guion).
+    - Etiquetas vacias o que empiecen/terminen en guion.
+    Exige al menos dos labels (FQDN minimo: `host.tld`).
+    """
+    if not host or any(c in host for c in ("@", ":", "/", "?", "#", " ")):
+        return False
+    if "://" in host:
+        return False
+    normalized = host.lower()
+    if normalized in ("localhost", "localhost."):
+        return False
+    # Rechaza literales de IP (v4 y v6).
+    try:
+        ipaddress.ip_address(normalized)
+        return False  # es una IP literal: rechazar
+    except ValueError:
+        pass
+    # Valida labels LDH (RFC 1123).
+    labels = normalized.rstrip(".").split(".")
+    if len(labels) < _FQDN_MIN_LABELS:
+        return False
+    return all(_FQDN_LABEL_RE.match(label) for label in labels)
+
+
+def _validate_host_field(field_name: str, value: str, allowed: frozenset[str]) -> None:
+    """Valida que `value` sea un host https valido y pertenezca al conjunto cerrado.
+
+    Lanza `InvalidConfigError` si no supera `_is_valid_https_host` o si el host
+    no esta en el conjunto `allowed` (dominio cerrado — ADR-09).
+    """
+    if not _is_valid_https_host(value):
+        raise InvalidConfigError(
+            f"'{field_name}' debe ser un FQDN https valido sin puerto, IP ni userinfo"
+        )
+    if value not in allowed:
+        allowed_str = ", ".join(sorted(allowed))
+        raise InvalidConfigError(
+            f"'{field_name}' no reconocido; valores permitidos: {allowed_str}"
+        )
+
+
+def _validate_path_field(field_name: str, value: str) -> None:
+    """Valida que `value` sea una ruta de API que empiece por `/`, sin '..' (R5.2 §3.6).
+
+    Rechaza dot-segments `..` aunque el charset base los permita: un path como
+    '/v1/../admin' pasaria la regex pero saldria de /v1/, violando el contrato de
+    host/path cerrado anti-SSRF (design §3.6, EARS R5.2).
+    """
+    if not _PATH_RE.match(value):
+        raise InvalidConfigError(
+            f"'{field_name}' debe empezar por '/' y contener solo caracteres URL seguros"
+        )
+    if any(seg == ".." for seg in value.split("/")):
+        raise InvalidConfigError(
+            f"'{field_name}' no puede contener componentes '..'"
+        )
+
+
 def _validate_ranges(config: Config) -> None:
-    """Valida los dominios de R8.3. Cualquier violacion ⇒ InvalidConfigError."""
+    """Valida dominios de R8.3 y R5.2. Cualquier violacion ⇒ InvalidConfigError."""
+    # --- Hito 1 (sin cambios) ---
     if not 0 <= config.umbral_warn < config.umbral_block <= _UMBRAL_MAX:
         raise InvalidConfigError(
             "umbrales fuera de rango: requiere 0 <= umbral_warn < umbral_block <= 100"
@@ -160,3 +310,13 @@ def _validate_ranges(config: Config) -> None:
         value = getattr(config, name)
         if value <= 0:
             raise InvalidConfigError(f"'{name}' debe ser > 0")
+    # --- Capa 3 (R5.2) ---
+    _validate_host_field("osv_host", config.osv_host, _VALID_OSV_HOSTS)
+    _validate_host_field("watchlist_host", config.watchlist_host, _VALID_WATCHLIST_HOSTS)
+    _validate_path_field("osv_query_path", config.osv_query_path)
+    _validate_path_field("watchlist_source_path", config.watchlist_source_path)
+    if config.threatintel_degraded_status not in _VALID_DEGRADED_STATUS:
+        valid_str = ", ".join(sorted(_VALID_DEGRADED_STATUS))
+        raise InvalidConfigError(
+            f"'threatintel_degraded_status' debe ser uno de: {valid_str}"
+        )

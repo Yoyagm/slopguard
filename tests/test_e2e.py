@@ -282,6 +282,9 @@ def _local_pypi_patches(port: int) -> Iterator[None]:
     with (
         patch.object(http_mod, "ALLOWED_HOSTS", frozenset({"127.0.0.1"})),
         patch.object(http_mod, "_ALLOWED_SCHEME", "http"),
+        # El loopback usa puerto efimero: neutraliza el rechazo de puerto explicito (A10
+        # SSRF, defecto-deniega en produccion) SOLO en este contexto, igual que la allowlist.
+        patch.object(http_mod, "_reject_port_and_userinfo", lambda _parts: None),
         patch.object(SecureHttpClient, "__init__", _patched_http_init),
         patch.object(pypi_mod, "_PYPI_API_BASE", base),
     ):

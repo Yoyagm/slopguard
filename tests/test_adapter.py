@@ -513,6 +513,7 @@ def _build_local_adapter(port: int) -> PypiAdapter:
     base = f"http://127.0.0.1:{port}/pypi/{{name}}/json"
     with patch.object(http_mod, "ALLOWED_HOSTS", frozenset({"127.0.0.1"})), \
          patch.object(http_mod, "_ALLOWED_SCHEME", "http"), \
+         patch.object(http_mod, "_reject_port_and_userinfo", lambda _parts: None), \
          patch.object(SecureHttpClient, "__init__", patched_init), \
          patch.object(pypi_mod, "_PYPI_API_BASE", base):
         return PypiAdapter(Config(), use_cache=False)
@@ -531,6 +532,7 @@ def test_e2e_404_es_not_found(local_pypi: int) -> None:
     base = f"http://127.0.0.1:{local_pypi}/pypi/{{name}}/json"
     with patch.object(http_mod, "ALLOWED_HOSTS", frozenset({"127.0.0.1"})), \
          patch.object(http_mod, "_ALLOWED_SCHEME", "http"), \
+         patch.object(http_mod, "_reject_port_and_userinfo", lambda _parts: None), \
          patch.object(pypi_mod, "_PYPI_API_BASE", base):
         outcome = adapter.fetch("ghost")
 
@@ -548,6 +550,7 @@ def test_e2e_503_es_unverifiable_transitorio(local_pypi: int) -> None:
     base = f"http://127.0.0.1:{local_pypi}/pypi/{{name}}/json"
     with patch.object(http_mod, "ALLOWED_HOSTS", frozenset({"127.0.0.1"})), \
          patch.object(http_mod, "_ALLOWED_SCHEME", "http"), \
+         patch.object(http_mod, "_reject_port_and_userinfo", lambda _parts: None), \
          patch.object(pypi_mod, "_PYPI_API_BASE", base):
         attempt = adapter.fetch_attempt("down")
 
@@ -561,6 +564,7 @@ def test_e2e_200_es_found(local_pypi: int) -> None:
     base = f"http://127.0.0.1:{local_pypi}/pypi/{{name}}/json"
     with patch.object(http_mod, "ALLOWED_HOSTS", frozenset({"127.0.0.1"})), \
          patch.object(http_mod, "_ALLOWED_SCHEME", "http"), \
+         patch.object(http_mod, "_reject_port_and_userinfo", lambda _parts: None), \
          patch.object(pypi_mod, "_PYPI_API_BASE", base):
         outcome = adapter.fetch("requests")
 

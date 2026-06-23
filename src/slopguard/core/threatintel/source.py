@@ -1,55 +1,26 @@
-"""Interfaz y modelos de transporte de fuente threat-intel.
+"""Interfaz de fuente threat-intel y re-exportacion de modelos de transporte.
 
-Este modulo define SOLO el contrato de abstraccion (`ThreatIntelSource` Protocol)
-y los modelos de transporte normalizados (`MaliceState`, `ThreatIntelResult`).
+Este modulo define SOLO el contrato de abstraccion (`ThreatIntelSource` Protocol).
 NO define implementaciones concretas de red (frontera R8.1, design §1.3 contrato 2).
 
-`Advisory` vive en `core.models` (modulo hoja), no aqui: asi `core.scoring.verdict`
-puede importarla sin cruzar la frontera core.scoring ✗→ core.threatintel.
+`MaliceState`, `ThreatIntelResult` y `Advisory` viven en `core.models` (modulo hoja)
+para que `core.layers.layer3_threatintel` y `core.scoring.verdict` los importen sin
+cruzar la frontera `core.layers`/`core.scoring` ✗→ `core.threatintel` (design §1.4).
+Este modulo los re-exporta para compatibilidad con los imports existentes en las impls
+(osv/watchlist/composite/resolver) que importan desde `.source`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Protocol
 
-from slopguard.core.models import Advisory
+from slopguard.core.models import Advisory, MaliceState, ThreatIntelResult
 
-
-class MaliceState(StrEnum):
-    """Resultado de consultar malicia/alucinacion para un unico nombre normalizado.
-
-    Los valores representan el veredicto agregado de TODAS las fuentes activas
-    (OSV + watchlist opcional). La Capa 3 los convierte en senales `LayerSignal`.
-    """
-
-    CLEAN = "clean"  # consultado y limpio: sin MAL-, sin match watchlist
-    MALICIOUS = "malicious"  # >=1 advisory MAL-* encontrado en OSV
-    KNOWN_HALLUCINATION = "known_hallucination"  # match exacto en corpus watchlist
-    UNVERIFIABLE = "unverifiable"  # fuente(s) no se pudieron consultar (degradacion)
-
-
-@dataclass(frozen=True, slots=True)
-class ThreatIntelResult:
-    """Resultado normalizado de threat-intel para UN nombre (entrada a la Capa 3).
-
-    Lo que ve la Capa 3: un objeto de datos puro, ya construido por el resolver.
-    La Capa 3 NUNCA instancia fuentes ni llama a la red: solo consume este modelo.
-
-    Invariantes:
-    - `advisories` es no-vacia solo si `state == MALICIOUS`.
-    - `watchlist_source` / `watchlist_date` se poblam solo si `state == KNOWN_HALLUCINATION`.
-    - `unverifiable_reason` se popula solo si `state == UNVERIFIABLE` (saneado antes).
-    """
-
-    name: str  # nombre normalizado PEP 503
-    state: MaliceState
-    advisories: tuple[Advisory, ...] = ()  # no vacio solo si MALICIOUS
-    watchlist_source: str | None = None  # procedencia+atribucion si KNOWN_HALLUCINATION
-    watchlist_date: str | None = None  # fecha del corpus (atribucion R7.2)
-    unverifiable_reason: str | None = None  # motivo del fallo (saneado), si UNVERIFIABLE
+# Re-exportaciones explicitas: los modelos viven en core.models (hoja);
+# se re-exportan aqui para compatibilidad con `from .source import MaliceState, ...`
+# que usan las impls internas del paquete core.threatintel.
+__all__ = ["Advisory", "MaliceState", "ThreatIntelResult", "ThreatIntelSource"]
 
 
 class ThreatIntelSource(Protocol):

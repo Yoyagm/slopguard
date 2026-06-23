@@ -61,19 +61,28 @@ def compute_score(signals: tuple[LayerSignal, ...]) -> int:
     return min(SCORE_MAX, hard_weight + min(soft_total, SOFT_CAP))
 
 
-def _max_hard_weight(signals: tuple[LayerSignal, ...]) -> int:
-    """Devuelve el mayor peso de las señales duras (TYPOSQUAT y NAME_UNTRUSTED).
+# Señales duras de override (weight=0) que NO contribuyen al score numerico:
+# el veredicto lo fija `build_dependency_result`, no el scorer. Se excluyen por
+# code (defensa en profundidad ante un futuro cambio de peso — ADR-06, §2.1).
+# KNOWN_HALLUCINATION (dura, weight=85) NO esta aqui: SI participa en el maximo.
+_OVERRIDE_HARD_CODES = frozenset({SignalCode.NONEXISTENT, SignalCode.MALICIOUS})
 
-    TYPOSQUAT y NAME_UNTRUSTED son mutuamente excluyentes en la capa 1,
-    pero el scorer toma el maximo como defensa en profundidad (ADR-01).
-    NONEXISTENT tiene peso=0 y es_soft=False; al filtrarlo tambien se excluye.
+
+def _max_hard_weight(signals: tuple[LayerSignal, ...]) -> int:
+    """Devuelve el mayor peso de las señales duras que contribuyen al score.
+
+    TYPOSQUAT y NAME_UNTRUSTED son mutuamente excluyentes en la capa 1, pero el
+    scorer toma el maximo como defensa en profundidad (ADR-01). KNOWN_HALLUCINATION
+    (dura, weight=85) participa con su peso y puede producir block por score (ADR-07).
+    Las señales de override (NONEXISTENT y MALICIOUS, ambas weight=0) se excluyen por
+    code: su veredicto lo fija el override en `verdict.py`, no el scoring (ADR-06).
     """
     best = 0
     for signal in signals:
         if signal.is_soft:
             continue
-        if signal.code is SignalCode.NONEXISTENT:
-            # Override: no contribuye al score numerico.
+        if signal.code in _OVERRIDE_HARD_CODES:
+            # Override (NONEXISTENT/MALICIOUS): no contribuye al score numerico.
             continue
         best = max(best, signal.weight)
     return best

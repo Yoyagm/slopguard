@@ -86,6 +86,10 @@ skip_covered = false
 # El gate de CI lo refuerza con --cov-fail-under=90 en pytest (T03).
 fail_under = 90
 
+# Piso de cobertura critica >= 95% para threatintel impuesto en CI via el paso
+# 'Cobertura de paquetes criticos (>= 95%)' en .github/workflows/slopguard-ci.yml.
+# Verificacion local: pytest tests/ --cov=slopguard.core.threatintel --cov-fail-under=95
+
 # --- Contratos de arquitectura (import-linter) -----------------------------
 # Verifican por analisis estatico la frontera de extensibilidad (R10) y el
 # desacople core/CLI. Hacen fallar el build si una capa cruza la frontera.
@@ -103,3 +107,35 @@ name = "Capas y scoring no dependen de PyPI ni de la red (R10.1)"
 type = "forbidden"
 source_modules = ["slopguard.core.layers", "slopguard.core.scoring"]
 forbidden_modules = ["slopguard.core.adapters.pypi", "slopguard.core.net"]
+
+# H2-T15: 3 contratos nuevos de Hito 2 (§1.3 design.md) ----------------------
+
+# (1) Capas y scoring no acceden a la red de threat-intel ni a sus impls (R8.1/R8.3).
+#     Advisory vive en core.models (hoja), por lo que no hay excepcion necesaria.
+[[tool.importlinter.contracts]]
+name = "Capas y scoring no dependen de la red de threat-intel (R8.1/R8.3)"
+type = "forbidden"
+source_modules = ["slopguard.core.layers", "slopguard.core.scoring"]
+forbidden_modules = ["slopguard.core.threatintel", "slopguard.core.net"]
+
+# (2) La interfaz/modelo de fuente (source.py) no conoce el transporte concreto (R8.1).
+#     Las impls (osv/watchlist/composite/resolver) si pueden usar net/cache.
+[[tool.importlinter.contracts]]
+name = "La interfaz de fuente threat-intel no conoce la red (R8.1)"
+type = "forbidden"
+source_modules = ["slopguard.core.threatintel.source"]
+forbidden_modules = ["slopguard.core.net"]
+
+# (3) Capa 3 pura: solo abstraccion + modelos, nunca impls concretas de threat-intel (R8.3).
+#     Refuerza el contrato (1) a nivel de submódulo; layer3 recibe ThreatIntelResult ya
+#     construido e inyectado por el engine, sin instanciar fuentes.
+[[tool.importlinter.contracts]]
+name = "Capa 3 pura solo usa la abstraccion de fuente (R8.3)"
+type = "forbidden"
+source_modules = ["slopguard.core.layers.layer3_threatintel"]
+forbidden_modules = [
+  "slopguard.core.threatintel.osv",
+  "slopguard.core.threatintel.watchlist",
+  "slopguard.core.threatintel.composite",
+  "slopguard.core.threatintel.resolver",
+]

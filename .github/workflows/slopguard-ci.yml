@@ -56,7 +56,7 @@ jobs:
       - name: Cobertura de paquetes criticos (>= 95%)
         run: |
           coverage report --fail-under=95 \
-            --include="src/slopguard/core/net/*,src/slopguard/core/cache/*,src/slopguard/core/scoring/*,src/slopguard/core/layers/*,src/slopguard/core/dataset/*"
+            --include="src/slopguard/core/net/*,src/slopguard/core/cache/*,src/slopguard/core/scoring/*,src/slopguard/core/layers/*,src/slopguard/core/dataset/*,src/slopguard/core/threatintel/*"
 
   docs:
     name: Documentacion LaTeX -> PDF

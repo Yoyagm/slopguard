@@ -6,7 +6,83 @@ y el versionado [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
-_Hito 2 (planeado): Capa 3 de threat-intel (OSV.dev + watchlist de alucinaciones)._
+## [0.2.0] - 2026-06-23
+
+Segundo hito (**Hito 2**): Capa 3 de *threat-intel* online sobre el motor determinista
+del Hito 1. Detecta paquetes confirmados maliciosos via OSV.dev y, opcionalmente,
+nombres alucinados conocidos via depscope. Cambios **estrictamente aditivos**;
+capas deterministas y contratos del Hito 1 intactos.
+
+### Added
+
+- **Capa 3 — threat-intel:** consulta [OSV.dev](https://osv.dev) `POST /v1/querybatch`
+  por lotes para detectar paquetes con advisories `MAL-*` (malicia confirmada). Solo se
+  consultan paquetes que existen en PyPI (`FOUND`); los inexistentes no requieren red.
+- **Senial `MALICIOUS`** (dura, override de block): un advisory `MAL-*` fuerza
+  `verdict=block` con `score=null`, con precedencia maxima sobre cualquier veredicto de
+  las capas 0-2. Ejemplo verificado en vivo: `bioql` => `MAL-2025-47868` => block.
+- **Senial `KNOWN_HALLUCINATION`** (dura, peso 85): match exacto contra el corpus de
+  alucinaciones depscope produce `block` por score (`>= umbral_block`), respetando la
+  invariante anti-FP (es una senial dura, no blanda).
+- **Senial `THREATINTEL_UNVERIFIABLE`** (blanda, peso 0): emitida cuando OSV o depscope
+  no responden; nunca produce `warn` ni `block` por si sola (invariante anti-FP intacta).
+- **Watchlist depscope (opt-in):** activable con `--enable-watchlist` o
+  `enable_watchlist=true`. Obtiene el corpus en runtime con cache TTL 24h. No redistribuye
+  ni embebe el corpus (respeto a CC-BY-NC-SA). La atribucion y la licencia del corpus
+  se incluyen en la salida JSON.
+- **Flag `--no-layer3`:** desactiva completamente la Capa 3. El sistema se comporta
+  identico al Hito 1 (solo capas deterministas; `api.osv.dev` no se anade al allowlist).
+- **Flag `--enable-watchlist`:** activa la consulta opcional a depscope.dev.
+- **JSON `schema_version` 1.1** (retrocompatible): se anade el campo `advisories[]`
+  (siempre presente, vacio si sin malicia) con `{id, kind, url, source}` para cada
+  advisory `MAL-*`. Las seniales de `layer:3` se incluyen en `signals[]`. Ningun campo
+  de 1.0 se modifica ni elimina.
+- **14 nuevos parametros de configuracion** de Capa 3 en `[tool.slopguard]` /
+  `.slopguard.toml` (ver tabla de defaults en README): `enable_layer3`, `osv_host`,
+  `osv_ttl_cache_horas`, `osv_timeout_total_por_lote_s`, `osv_reintentos`,
+  `osv_batch_max`, `enable_watchlist`, `watchlist_host`, `watchlist_ttl_cache_horas`,
+  `watchlist_timeout_total_s`, `threatintel_degraded_status`, mas reuso de
+  `max_response_bytes` y `max_json_depth`.
+- **Cache de threat-intel** namespaced: `get_blob`/`put_blob` JSON-only sobre
+  `DiskCache`, con `cache_schema_version="ti-1"`, clave `sha256("osv:pypi:{name}")` /
+  `sha256("watchlist:{host}{path}")`. El estado `UNVERIFIABLE` nunca se cachea.
+- **Interfaz `ThreatIntelSource` (Protocol):** abstraccion desacoplada de la red;
+  `CompositeSource` fan-out a `OsvSource` + `WatchlistSource` (si activa).
+  `resolve_threatintel` gestiona chunking (<= `osv_batch_max`), dedup global y
+  degradacion segura de lote.
+- **3 contratos nuevos de import-linter** (5 en total): capas/scoring ✗-> threatintel+net;
+  source ✗-> net; layer3 ✗-> impls concretas. Los 2 contratos del Hito 1 se mantienen.
+- **1547 pruebas** (928 nuevas sobre las 619 del Hito 1): unitarias, tabla de precedencias,
+  propiedad anti-FP, red con servidor local malicioso, e2e con OSV simulado.
+
+### Security
+
+- **Fail-closed:** si OSV o depscope no responden tras reintentos, la dependencia pasa a
+  `unverifiable` (exit 3), nunca a `allow`. Un `block` de capas deterministas domina sobre
+  cualquier fallo de threat-intel.
+- **Allowlist ampliado con guardia:** `ALLOWED_HOSTS = {pypi.org}` permanece como
+  constante base verificada estaticamente; `api.osv.dev` y (si watchlist activa)
+  `depscope.dev` se anaden por-instancia mediante `extra_allowed_hosts`. El redirect
+  handler valida contra el conjunto efectivo de la instancia (fix SSRF: previene
+  redirecciones de `api.osv.dev` hacia hosts arbitrarios o hacia `pypi.org`).
+- **Anti-envenenamiento de feed OSV:** IDs de advisory validados con
+  `^MAL-[0-9A-Za-z-]+$`; nombres validados por charset antes del POST; URL de advisory
+  reconstruida desde el ID validado (nunca reflejada del payload crudo).
+- **Anti-envenenamiento de corpus watchlist:** charset `^[a-z0-9-]+$` + cap de tamano
+  (`_WATCHLIST_MAX_NAMES`) verificados tanto al parsear la respuesta como al leer la
+  cache; corpus inflado o con charset invalido => miss (refetch), no truncamiento silencioso.
+- **`429` (rate limit) clasificado como transitorio:** se reintenta con backoff (igual que
+  5xx); agotados los reintentos => `UNVERIFIABLE`, nunca `CLEAN`.
+- **Privacidad por disenio (NFR-Priv.3):** solo nombre normalizado + ecosistema se envian
+  a OSV/depscope; nunca el manifiesto, rutas locales ni identificadores del usuario.
+  Completamente desactivable con `--no-layer3`.
+
+### Notes
+
+- **1547 pruebas**; cobertura **96.23% global / 99% en paquetes criticos**
+  (incluye `core/threatintel`).
+- CI: mypy `--strict` (82 archivos), ruff (incl. reglas bandit), import-linter
+  (5 contratos), guardia estatico de allowlist + anti-envenenamiento, compilacion LaTeX.
 
 ## [0.1.0] - 2026-06-22
 
@@ -37,5 +113,6 @@ para dependencias Python, sin LLMs y usando solo la PyPI JSON API.
 - **619 pruebas**; cobertura **95.3% global / 99% en paquetes críticos**.
 - CI: mypy `--strict`, ruff (incl. reglas bandit), import-linter (frontera capas/scoring ↛ red) y compilación del documento técnico LaTeX a PDF.
 
-[Unreleased]: https://github.com/Yoyagm/slopguard/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Yoyagm/slopguard/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Yoyagm/slopguard/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Yoyagm/slopguard/releases/tag/v0.1.0

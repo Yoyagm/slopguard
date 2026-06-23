@@ -703,9 +703,10 @@ def test_e2e_rendimiento_30_deps_cache_fria_bajo_t_ref() -> None:
     # Cota INFERIOR por DIFERENCIAL (anti-tautologia): el serial NO paraleliza la
     # red y paga N sleeps; el concurrente paga ceil(N/workers). El ahorro es puro
     # tiempo de red simulada => demuestra que el wall-clock esta dominado por la
-    # latencia y que el orquestador la paraleliza. Piso 0.5x del ahorro ideal para
-    # absorber jitter sin volver vacua la cota (con latencia 0 el ahorro seria ~0).
-    saved_floor = (_PERF_DEP_COUNT - serial_batches) * latency * 0.5  # (30-4)*0.1*0.5
+    # latencia y que el orquestador la paraleliza. Piso 0.25x del ahorro ideal: muy
+    # por debajo del ahorro estructural (~2.6 s) para tolerar la contencion de
+    # runners CI de 2 cores sin volver vacua la cota (con latencia 0 el ahorro ~0).
+    saved_floor = (_PERF_DEP_COUNT - serial_batches) * latency * 0.25  # (30-4)*0.1*0.25
     latency_savings = wall_serial - wall_concurrent
     assert latency_savings >= saved_floor, (
         f"ahorro por concurrencia {latency_savings:.3f}s "
@@ -736,9 +737,11 @@ def test_e2e_concurrencia_real_mas_rapida_que_serial_simulado() -> None:
     wall_serial = _run_perf_scan(script, latency_s=latency, workers=1)
     wall_concurrent = _run_perf_scan(script, latency_s=latency, workers=8)
 
-    # El delta de latencia pura (~1.4 s) lo aporta la red simulada, no el tracing:
-    # exigimos un ahorro neto holgado (>= 0.8 s) robusto a cobertura y carga.
-    assert wall_serial - wall_concurrent >= 0.8, (
+    # El delta de latencia pura (~1.4 s) lo aporta la red simulada, no el tracing.
+    # Exigimos un ahorro de 0.3 s: muy por debajo del estructural (~1.4 s) para no
+    # flakear en runners CI contendidos de 2 cores (donde el dispatch de 8 hilos para
+    # 16 tareas añade overhead), pero suficiente para probar la paralelizacion real.
+    assert wall_serial - wall_concurrent >= 0.3, (
         f"concurrencia {wall_concurrent:.3f}s no mejora suficientemente el serial "
         f"{wall_serial:.3f}s (ahorro esperado ~1.4 s): la orquestacion no esta "
         "paralelizando la red simulada"

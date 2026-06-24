@@ -363,7 +363,7 @@ def test_layer3_desactivado_json_sigue_valido(
     report = scan_dependencies(_deps("plain"), Config(enable_layer3=False))
 
     parsed = json.loads(render_json(report))
-    assert parsed["schema_version"] == "1.1"
+    assert parsed["schema_version"] == "1.2"
     assert parsed["results"][0]["verdict"] == "allow"
     assert parsed["results"][0]["advisories"] == []
 
@@ -548,7 +548,7 @@ def test_json_schema_version_1_1(
     """§2.4: el JSON declara schema_version 1.1."""
     report = _report_malicious(monkeypatch, top_n, "MAL-2025-6001")
     parsed = json.loads(render_json(report))
-    assert parsed["schema_version"] == "1.1"
+    assert parsed["schema_version"] == "1.2"
 
 
 def test_json_advisories_clave_estable_presente(

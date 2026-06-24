@@ -758,7 +758,7 @@ def test_e2e_cli_json_1_1_con_advisories_y_exit_2(
     """`main` sobre un requirements.txt: JSON 1.1 con advisories[] y exit 2 por MAL-.
 
     Camino REAL completo desde la CLI: parse manifiesto -> engine -> net+OSV local ->
-    render JSON. Verifica `schema_version=="1.1"`, el bloque `advisories[]` con clave
+    render JSON. Verifica `schema_version == "1.2"`, el bloque `advisories[]` con clave
     estable {id,kind,url,source} y el exit code 2 del override MALICIOUS (R7.3/R4.1).
     """
     manifest = tmp_path / "requirements.txt"
@@ -773,7 +773,7 @@ def test_e2e_cli_json_1_1_con_advisories_y_exit_2(
 
     assert exit_code == 2  # block override => exit 2 (R4.1)
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "1.1"  # R7.3
+    assert payload["schema_version"] == "1.2"  # R7.3
     by_name = {r["name"]: r for r in payload["results"]}
     bioql = by_name["bioql"]
     assert bioql["verdict"] == "block"
@@ -802,7 +802,7 @@ def test_e2e_cli_no_layer3_no_consulta_osv_exit_0(
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "1.1"  # version sube aunque L3 este off
+    assert payload["schema_version"] == "1.2"  # version sube aunque L3 este off
     assert payload["results"][0]["verdict"] == "allow"
     assert state.osv_queried == []  # ningun POST a OSV (R5.3)
 

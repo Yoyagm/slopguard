@@ -25,7 +25,7 @@ from typing import Any, TextIO
 
 from slopguard.core import Advisory, DependencyResult, LayerSignal, ScanReport
 from slopguard.core.models import LlmAssessment
-from slopguard.core.normalize import sanitize_for_output
+from slopguard.core.normalize import sanitize_and_truncate, sanitize_for_output
 
 
 def _advisory_to_dict(advisory: Advisory) -> dict[str, object]:
@@ -42,19 +42,23 @@ def _advisory_to_dict(advisory: Advisory) -> dict[str, object]:
     }
 
 
-def _llm_assessment_to_dict(assessment: LlmAssessment) -> dict[str, object]:
+def _llm_assessment_to_dict(
+    assessment: LlmAssessment, *, max_patron: int, max_rationale: int
+) -> dict[str, object]:
     """Serializa un LlmAssessment con claves fijas en orden determinista (H3-T18).
 
     `clasificacion` es un StrEnum: se usa .value para que el JSON sea estable.
-    El resto de strings externos (patron, rationale, modelo, prompt_version) se
-    sanean como defensa en profundidad (R6.5/R7.4), aunque ya vienen truncados
-    del evaluador.
+    `patron` y `rationale` son TEXTO DEL LLM (entrada no confiable, tambien para
+    consumidores aguas abajo del JSON): se sanean Y truncan aqui con
+    `sanitize_and_truncate` (R7.3/ADR-19), defensa en profundidad que no asume que
+    una capa previa ya truncara (p.ej. un blob de cache reconstruido sin truncar).
+    `modelo` y `prompt_version` no son texto libre del LLM: solo se sanean.
     """
     return {
         "clasificacion": assessment.clasificacion.value,
         "confianza": assessment.confianza,
-        "patron": sanitize_for_output(assessment.patron),
-        "rationale": sanitize_for_output(assessment.rationale),
+        "patron": sanitize_and_truncate(assessment.patron, max_patron),
+        "rationale": sanitize_and_truncate(assessment.rationale, max_rationale),
         "modelo": sanitize_for_output(assessment.modelo),
         "prompt_version": sanitize_for_output(assessment.prompt_version),
     }
@@ -77,7 +81,9 @@ def _signal_to_dict(signal: LayerSignal) -> dict[str, object]:
     }
 
 
-def _result_to_dict(result: DependencyResult) -> dict[str, object]:
+def _result_to_dict(
+    result: DependencyResult, *, max_patron: int, max_rationale: int
+) -> dict[str, object]:
     """Serializa un DependencyResult con claves fijas en orden determinista (§2.5)."""
     return {
         "name": sanitize_for_output(result.name),
@@ -102,14 +108,18 @@ def _result_to_dict(result: DependencyResult) -> dict[str, object]:
         "advisories": [_advisory_to_dict(a) for a in result.advisories],
         # Clave estable (H3-T18, schema 1.2): null si sin evaluacion LLM.
         "llm_assessment": (
-            _llm_assessment_to_dict(result.llm_assessment)
+            _llm_assessment_to_dict(
+                result.llm_assessment, max_patron=max_patron, max_rationale=max_rationale
+            )
             if result.llm_assessment is not None
             else None
         ),
     }
 
 
-def _report_to_dict(report: ScanReport) -> dict[str, Any]:
+def _report_to_dict(
+    report: ScanReport, *, max_patron: int, max_rationale: int
+) -> dict[str, Any]:
     """Convierte un ScanReport al diccionario JSON canonico (§2.5)."""
     summary = report.summary
     return {
@@ -128,21 +138,38 @@ def _report_to_dict(report: ScanReport) -> dict[str, Any]:
         "error_category": (
             report.error_category.value if report.error_category is not None else None
         ),
-        "results": [_result_to_dict(r) for r in report.results],
+        "results": [
+            _result_to_dict(r, max_patron=max_patron, max_rationale=max_rationale)
+            for r in report.results
+        ],
     }
 
 
-def render_json(report: ScanReport) -> str:
+def render_json(
+    report: ScanReport, *, max_patron: int = 280, max_rationale: int = 1000
+) -> str:
     """Retorna la cadena JSON canonica del reporte (R6.3, §2.5).
 
     Sin timestamps de reloj. Strings externos saneados. Orden determinista.
+    `max_patron`/`max_rationale` acotan el texto del LLM (R7.3); sus defaults
+    coinciden con los de `Config` (`llm_max_text_patron`/`llm_max_text_rationale`)
+    para no romper call-sites que no pasen limites.
     """
-    data = _report_to_dict(report)
+    data = _report_to_dict(report, max_patron=max_patron, max_rationale=max_rationale)
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def render_json_to(report: ScanReport, *, out: TextIO | None = None) -> None:
-    """Escribe el JSON canonico al stream dado (default stdout)."""
+def render_json_to(
+    report: ScanReport,
+    *,
+    out: TextIO | None = None,
+    max_patron: int = 280,
+    max_rationale: int = 1000,
+) -> None:
+    """Escribe el JSON canonico al stream dado (default stdout).
+
+    Propaga los limites de truncado del texto del LLM (R7.3) a `render_json`.
+    """
     stream = out if out is not None else sys.stdout
-    stream.write(render_json(report))
+    stream.write(render_json(report, max_patron=max_patron, max_rationale=max_rationale))
     stream.write("\n")

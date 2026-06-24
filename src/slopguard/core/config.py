@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import InvalidConfigError
+from .models import LLM_SOFT_CAP, SOFT_CAP
 from .normalize import sanitize_for_output
 
 # ---------------------------------------------------------------------------
@@ -336,6 +337,30 @@ def _validate_path_field(field_name: str, value: str) -> None:
         )
 
 
+def _validate_anti_block(config: Config) -> None:
+    """Valida el invariante anti-block de la Capa 4 (R5.2.b/c, fail-closed).
+
+    Los topes `SOFT_CAP`/`LLM_SOFT_CAP` son estructurales (no configurables); el
+    unico parametro movil es `umbral_block`. Esta validacion fija por CONFIG lo
+    que el gating garantiza por construccion: el canal L4 (acotado a LLM_SOFT_CAP)
+    sumado al techo heuristico (SOFT_CAP) NUNCA alcanza `umbral_block` ⇒ la Capa 4
+    jamas bloquea. Ademas exige `LLM_SOFT_CAP >= umbral_warn` para que el canal L4
+    pueda alcanzar `warn` (si no, seria inutil). Cualquier violacion ABORTA sin
+    aplicar valores a medias (InvalidConfigError ⇒ exit 3, control de seguridad).
+    """
+    caps_total = SOFT_CAP + LLM_SOFT_CAP
+    if caps_total >= config.umbral_block:
+        raise InvalidConfigError(
+            f"invariante anti-block violado: SOFT_CAP+LLM_SOFT_CAP (={caps_total}) "
+            f"debe ser < umbral_block (={config.umbral_block})"
+        )
+    if LLM_SOFT_CAP < config.umbral_warn:
+        raise InvalidConfigError(
+            f"LLM_SOFT_CAP (={LLM_SOFT_CAP}) debe ser >= umbral_warn "
+            f"(={config.umbral_warn}) para que el canal L4 pueda alcanzar warn"
+        )
+
+
 def _validate_ranges(config: Config) -> None:
     """Valida dominios de R8.3 y R5.2. Cualquier violacion ⇒ InvalidConfigError."""
     # --- Hito 1 (sin cambios) ---
@@ -364,6 +389,7 @@ def _validate_ranges(config: Config) -> None:
             f"'threatintel_degraded_status' debe ser uno de: {valid_str}"
         )
     # --- Capa 4 (R5.2, Hito 3) ---
+    _validate_anti_block(config)
     _validate_host_field("llm_host", config.llm_host, _VALID_LLM_HOSTS)
     _validate_path_field("llm_api_path", config.llm_api_path)
     if config.llm_effort not in _VALID_LLM_EFFORT:

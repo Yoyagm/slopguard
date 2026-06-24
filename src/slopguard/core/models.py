@@ -17,6 +17,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
+# ---------------------------------------------------------------------------
+# Topes estructurales de saturacion del scoring (ADR-01/ADR-11). Viven en esta
+# HOJA para que `core.scoring.scorer` (que los APLICA) y `core.config` (que valida
+# el invariante anti-block SOBRE ellos) compartan una UNICA fuente de verdad sin
+# que `config` dependa de `scoring`: `core.layers.layer4_hallucination` importa
+# `core.config`, y la frontera ADR-17 prohibe `core.layers ✗→ core.scoring`.
+# Mismo patron que MaliceState/ThreatIntelResult (design §1.4). NO son
+# configurables: hacerlos moviles seria un footgun que romperia el anti-block.
+SOFT_CAP = 25  # techo de las senales blandas heuristicas (ADR-01)
+LLM_SOFT_CAP = 50  # techo del canal LLM separado, Hito 3 (ADR-11)
+
 
 class Layer(IntEnum):
     """Capa de deteccion que origino una senal."""

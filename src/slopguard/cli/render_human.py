@@ -15,7 +15,7 @@ import sys
 from typing import TextIO
 
 from slopguard.core import DependencyResult, ScanReport, SignalCode, Verdict
-from slopguard.core.normalize import sanitize_for_output
+from slopguard.core.normalize import sanitize_and_truncate, sanitize_for_output
 
 # Ancho maximo de linea para el render TTY.
 _LINE_WIDTH = 78
@@ -93,17 +93,23 @@ def _render_watchlist_attribution(result: DependencyResult, out: TextIO) -> None
             return
 
 
-def _render_llm_assessment(result: DependencyResult, out: TextIO) -> None:
-    """Escribe el bloque de evaluacion LLM si existe (H3-T19, R6.5/R7.4).
+def _render_llm_assessment(
+    result: DependencyResult, out: TextIO, *, max_patron: int, max_rationale: int
+) -> None:
+    """Escribe el bloque de evaluacion LLM si existe (H3-T19, R6.5/R7.4/R7.3).
 
     Marcado explicitamente como advisory generado por LLM (no verificado).
-    Todos los strings externos se sanean (R7.4): patron, rationale, modelo y
-    prompt_version provienen del LLM y se tratan como datos no confiables.
+    `rationale` es texto del LLM (entrada no confiable): se sanea Y trunca con
+    `sanitize_and_truncate` (R7.3/ADR-19), defensa en profundidad que no asume que
+    una capa previa truncara (p.ej. un blob de cache reconstruido sin truncar).
+    `max_patron` se recibe por simetria con el render JSON y queda reservado: el
+    render humano NO muestra `patron` hoy (se truncaria igual si se mostrara).
+    `modelo`/`prompt_version` no son texto libre del LLM: solo se sanean.
     """
     assessment = result.llm_assessment
     if assessment is None:
         return
-    rationale = sanitize_for_output(assessment.rationale)
+    rationale = sanitize_and_truncate(assessment.rationale, max_rationale)
     modelo = sanitize_for_output(assessment.modelo)
     prompt_ver = sanitize_for_output(assessment.prompt_version)
     out.write(
@@ -115,7 +121,9 @@ def _render_llm_assessment(result: DependencyResult, out: TextIO) -> None:
     out.write(f"    Transparencia: modelo={modelo}  prompt_version={prompt_ver}\n")
 
 
-def _render_dep(result: DependencyResult, out: TextIO) -> None:
+def _render_dep(
+    result: DependencyResult, out: TextIO, *, max_patron: int, max_rationale: int
+) -> None:
     """Escribe una dependencia individual al stream de salida (R7.1/R7.2/R7.4)."""
     name = sanitize_for_output(result.name)
     version = f"=={sanitize_for_output(result.version_pin)}" if result.version_pin else ""
@@ -151,7 +159,7 @@ def _render_dep(result: DependencyResult, out: TextIO) -> None:
     _render_watchlist_attribution(result, out)
 
     # Evaluacion LLM si disponible (H3-T19): advisory no verificado.
-    _render_llm_assessment(result, out)
+    _render_llm_assessment(result, out, max_patron=max_patron, max_rationale=max_rationale)
 
     # Accion generica: para MALICIOUS usa la especifica si ya se mostro en advisories.
     if not _has_malicious_signal(result):
@@ -159,11 +167,19 @@ def _render_dep(result: DependencyResult, out: TextIO) -> None:
         out.write(f"  Accion: {action}\n")
 
 
-def render_human(report: ScanReport, *, out: TextIO | None = None) -> None:
+def render_human(
+    report: ScanReport,
+    *,
+    out: TextIO | None = None,
+    max_patron: int = 280,
+    max_rationale: int = 1000,
+) -> None:
     """Escribe el reporte en formato humano al stream dado (default stdout).
 
     Imprime: cabecera, cada dependencia, y resumen final con conteos (R6.1-6.2).
-    Todos los strings externos se sanean (R6.5).
+    Todos los strings externos se sanean (R6.5). `max_patron`/`max_rationale`
+    acotan el texto del LLM (R7.3); sus defaults coinciden con los de `Config`
+    para no romper call-sites que no pasen limites.
     """
     stream = out if out is not None else sys.stdout
     ecosystem = sanitize_for_output(report.ecosystem)
@@ -185,7 +201,7 @@ def render_human(report: ScanReport, *, out: TextIO | None = None) -> None:
         return
 
     for result in report.results:
-        _render_dep(result, stream)
+        _render_dep(result, stream, max_patron=max_patron, max_rationale=max_rationale)
 
     _write_summary(report, stream)
 

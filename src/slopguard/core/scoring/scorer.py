@@ -35,23 +35,17 @@ del SOFT_CAP heuristico. El gating garantiza max_hard=0 para toda dep con senal 
 asi que score <= 25 + 50 = 75 < umbral_block (80): la Capa 4 NUNCA bloquea (R3.1/R3.2).
 
 Sin I/O, sin red, sin reloj. Funcion pura y determinista (R5.7).
-Importa SOLO de: core.models (los topes SOFT_CAP/LLM_SOFT_CAP son constantes de este modulo).
+Importa SOLO de: core.models. Los topes SOFT_CAP/LLM_SOFT_CAP viven en core.models
+(hoja compartida) y se re-exportan aqui: asi `core.config` valida el invariante
+anti-block sobre la MISMA fuente sin depender de `core.scoring` (frontera ADR-17).
 """
 
 from __future__ import annotations
 
-from slopguard.core.models import LayerSignal, SignalCode
-
-# Techo de las señales blandas (ADR-01).
-# Invariante estructural: SOFT_CAP < umbral_warn (50 default) ⟹ blandas solas
-# nunca producen warn/block (R5.6 por construccion).
-SOFT_CAP = 25
-
-# Techo del canal LLM separado (Hito 3, ADR-11). ESTRUCTURAL, NO configurable
-# (hacerlo configurable seria un footgun que romperia el anti-block).
-# Invariante anti-block por construccion: el gating garantiza max_hard=0 para toda
-# dep con senal L4, luego SOFT_CAP + LLM_SOFT_CAP = 75 < umbral_block (80 default).
-LLM_SOFT_CAP = 50
+# SOFT_CAP/LLM_SOFT_CAP son constantes ESTRUCTURALES (no configurables): hacerlas
+# moviles seria un footgun que romperia el anti-block. Definidas en core.models
+# (hoja) y re-exportadas aqui para conservar `from ...scorer import SOFT_CAP`.
+from slopguard.core.models import LLM_SOFT_CAP, SOFT_CAP, LayerSignal, SignalCode
 
 # Cota maxima del score (R5.1).
 SCORE_MAX = 100

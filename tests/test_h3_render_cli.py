@@ -37,12 +37,16 @@ from slopguard.core import (
     Verdict,
     load_config,
 )
+from slopguard.core.llm.resolver import _validate_blob
 from slopguard.core.models import Clasificacion, LlmAssessment
 
 # Secuencias de control para verificar el saneo (R6.5/R7.4).
 _ANSI = "\x1b[31m"
 _OSC = "\x1b]0;titulo\x07"
 _CRLF = "\r\n"
+
+# Marcador de truncado (R7.3/ADR-19): debe espejar `normalize._TRUNCADO_MARKER`.
+_MARKER = "...[truncado]"
 
 
 # --------------------------------------------------------------------------- #
@@ -457,3 +461,102 @@ def test_cli_overrides_a_load_config_flujo_completo() -> None:
     config = load_config(None, overrides)
     assert config.enable_layer4 is True
     assert config.llm_model == "claude-opus-4-8"
+
+
+# ===========================================================================
+# R7.3/ADR-19: re-saneo+truncado del texto del LLM en la FRONTERA de salida.
+#
+# Bug que corrige el critic: el render usaba `sanitize_for_output` (solo sanea,
+# NO trunca) para `patron`/`rationale`. Un texto gigante (p.ej. un blob de cache
+# rehidratado sin truncar) saldria sin acotar. La salida es la ultima linea de
+# defensa: no asume que una capa previa ya trunco (defensa en profundidad).
+# ===========================================================================
+
+
+def test_json_rationale_se_trunca_en_la_salida() -> None:
+    """R7.3: un rationale > 1000 chars se trunca con marcador en el JSON (limite por defecto)."""
+    parsed = _json_with_assessment(rationale="r" * 2000)
+    block = parsed["results"][0]["llm_assessment"]
+    assert block["rationale"].endswith(_MARKER)
+    assert len(block["rationale"]) <= 1000
+
+
+def test_json_patron_se_trunca_en_la_salida() -> None:
+    """R7.3: un patron > 280 chars se trunca con marcador en el JSON (limite por defecto)."""
+    parsed = _json_with_assessment(patron="p" * 600)
+    block = parsed["results"][0]["llm_assessment"]
+    assert block["patron"].endswith(_MARKER)
+    assert len(block["patron"]) <= 280
+
+
+def test_json_rationale_corto_no_se_trunca() -> None:
+    """R7.3: un rationale dentro del limite no recibe marcador (truncado solo si excede)."""
+    parsed = _json_with_assessment(rationale="ok")
+    block = parsed["results"][0]["llm_assessment"]
+    assert block["rationale"] == "ok"
+
+
+def test_json_respeta_limite_personalizado() -> None:
+    """R7.3: render_json acepta limites custom (los que _render toma de Config)."""
+    report = _report((_result(assessment=_assessment(rationale="r" * 500)),))
+    parsed = json.loads(render_json(report, max_rationale=100))
+    block = parsed["results"][0]["llm_assessment"]
+    assert block["rationale"].endswith(_MARKER)
+    assert len(block["rationale"]) <= 100
+
+
+def test_human_rationale_se_trunca_en_la_salida() -> None:
+    """R7.3: un rationale gigante se trunca con marcador en el render humano."""
+    text = _human_with_assessment(rationale="r" * 2000)
+    assert _MARKER in text
+    assert "r" * 2000 not in text
+
+
+def test_cache_blob_gigante_se_trunca_en_render_json() -> None:
+    """R7.3: un blob de cache rehidratado SIN truncar se trunca igual en la frontera JSON.
+
+    `_validate_blob` (resolver) reconstruye el LlmAssessment con `str(...)` sin
+    truncar; el render es la ultima linea de defensa. Cubre la ruta de cache que
+    el critic senalo como camino por el que un texto gigante podia salir sin acotar.
+    """
+    payload: dict[str, object] = {
+        "clasificacion": "fabricacion",
+        "confianza": 0.9,
+        "patron": "p" * 600,
+        "rationale": "r" * 3000,
+        "modelo": "claude-opus-4-8",
+        "prompt_version": "h3-v1",
+    }
+    assessment = _validate_blob(payload)
+    assert assessment is not None
+    # El blob NO se trunca al rehidratar: la defensa esta en la salida, no en la cache.
+    assert len(assessment.rationale) == 3000
+    assert len(assessment.patron) == 600
+
+    parsed = json.loads(render_json(_report((_result(assessment=assessment),))))
+    block = parsed["results"][0]["llm_assessment"]
+    assert block["rationale"].endswith(_MARKER)
+    assert len(block["rationale"]) <= 1000
+    assert block["patron"].endswith(_MARKER)
+    assert len(block["patron"]) <= 280
+
+
+def test_render_propaga_limites_de_config_json(capsys: pytest.CaptureFixture[str]) -> None:
+    """R7.3: cli._render toma los limites de la Config activa y los pasa al render JSON."""
+    config = Config(llm_max_text_rationale=50)
+    report = _report((_result(assessment=_assessment(rationale="r" * 500)),))
+    cli_main._render(report, config, fmt="json")
+    parsed = json.loads(capsys.readouterr().out)
+    block = parsed["results"][0]["llm_assessment"]
+    assert block["rationale"].endswith(_MARKER)
+    assert len(block["rationale"]) <= 50
+
+
+def test_render_propaga_limites_de_config_human(capsys: pytest.CaptureFixture[str]) -> None:
+    """R7.3: cli._render toma los limites de la Config activa y los pasa al render humano."""
+    config = Config(llm_max_text_rationale=40)
+    report = _report((_result(assessment=_assessment(rationale="r" * 500)),))
+    cli_main._render(report, config, fmt="human")
+    out = capsys.readouterr().out
+    assert _MARKER in out
+    assert "r" * 500 not in out

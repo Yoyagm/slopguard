@@ -282,7 +282,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         _stderr(f"Error de configuracion: {sanitize_for_output(str(exc))}")
         return EXIT_OPERATIONAL
 
-    _render(report, fmt=args.fmt)
+    _render(report, config, fmt=args.fmt)
 
     if report.error_category is not None:
         return EXIT_OPERATIONAL
@@ -334,12 +334,25 @@ def _fetch_report(
     )
 
 
-def _render(report: ScanReport, *, fmt: str) -> None:
-    """Delega al renderer correcto segun el formato elegido."""
+def _render(report: ScanReport, config: Config, *, fmt: str) -> None:
+    """Delega al renderer correcto segun el formato elegido.
+
+    Propaga los limites de truncado del texto del LLM desde la `Config` activa
+    (R7.3): el texto del LLM se sanea Y trunca en la frontera de salida, sin
+    asumir que una capa previa ya lo truncara (defensa en profundidad).
+    """
     if fmt == "json":
-        render_json_to(report)
+        render_json_to(
+            report,
+            max_patron=config.llm_max_text_patron,
+            max_rationale=config.llm_max_text_rationale,
+        )
     else:
-        render_human(report)
+        render_human(
+            report,
+            max_patron=config.llm_max_text_patron,
+            max_rationale=config.llm_max_text_rationale,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

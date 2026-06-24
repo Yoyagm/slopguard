@@ -35,10 +35,15 @@ opt-in**. La señal va en un **canal de peso separado** que puede a lo sumo elev
 
 - La señal L4 **nunca bloquea**: canal acotado a `LLM_SOFT_CAP=50` con `SOFT_CAP(25) +
   LLM_SOFT_CAP(50) = 75 < umbral_block(80)` y `max_hard=0` garantizado por el gating; verificado
-  por test de propiedad y **7 contratos import-linter** (frontera ADR-17).
+  por test de propiedad y **7 contratos import-linter** (frontera ADR-17). **Además validado por
+  configuración (R5.2):** `_validate_anti_block` aborta *fail-closed* (exit 3) cualquier config con
+  `SOFT_CAP + LLM_SOFT_CAP ≥ umbral_block` o `LLM_SOFT_CAP < umbral_warn`, cerrando el bloqueo por
+  L4 que era posible con `--umbral-block ≤ 75`. Los topes viven en `core.models` (hoja, fuente única).
 - `ANTHROPIC_API_KEY` solo de entorno; jamás en logs, JSON, excepciones (incl. cadena
-  `__cause__`) ni en la caché. Texto del LLM tratado como entrada no confiable (saneado en la
-  frontera de salida); nombre encajonado en el prompt (anti prompt-injection de 1.er/2.º orden).
+  `__cause__`) ni en la caché. Texto del LLM tratado como entrada no confiable: **saneado y
+  truncado en la frontera de salida** (`sanitize_and_truncate`, R7.3/ADR-19) como defensa en
+  profundidad —incluso para blobs de caché rehidratados, sin asumir que una capa previa truncó—;
+  nombre encajonado en el prompt (anti prompt-injection de 1.er/2.º orden).
 - `safe_json` endurecido rechaza `NaN`/`Infinity` en la salida estructurada del LLM.
 
 ### Changed

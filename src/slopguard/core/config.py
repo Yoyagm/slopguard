@@ -35,6 +35,10 @@ _INT_FIELDS: frozenset[str] = frozenset({
     # Capa 3 (tabla R5):
     "osv_batch_max", "osv_ttl_cache_horas", "osv_reintentos",
     "watchlist_ttl_cache_horas",
+    # Capa 4 (tabla R5, Hito 3):
+    "gray_edad_max_dias", "w_base_fabricacion", "w_base_conflacion", "w_base_typo",
+    "llm_max_calls_por_corrida", "llm_max_text_patron", "llm_max_text_rationale",
+    "llm_ttl_cache_horas", "llm_reintentos", "llm_max_tokens",
 })
 
 # Campos float: Hito 1 (sin cambios) + Capa 3.
@@ -42,6 +46,8 @@ _FLOAT_FIELDS: frozenset[str] = frozenset({
     "connect_timeout_s", "read_timeout_s", "timeout_total_por_dep_s", "jw_min",
     # Capa 3 (tabla R5):
     "osv_timeout_total_por_lote_s", "watchlist_timeout_total_s",
+    # Capa 4 (Hito 3):
+    "llm_conf_min", "llm_timeout_total_s", "llm_unavailable_warn_frac",
 })
 
 # Campos string nuevos de Capa 3 (hosts, rutas, modo de degradacion).
@@ -49,11 +55,15 @@ _STR_FIELDS: frozenset[str] = frozenset({
     "osv_host", "osv_query_path",
     "watchlist_host", "watchlist_source_path",
     "threatintel_degraded_status",
+    # Capa 4 (Hito 3):
+    "llm_host", "llm_api_path", "llm_api_version", "llm_model",
+    "llm_effort", "prompt_version",
 })
 
 # Campos booleanos nuevos de Capa 3.
 _BOOL_FIELDS: frozenset[str] = frozenset({
     "enable_layer3", "enable_watchlist",
+    "enable_layer4",  # Capa 4 (Hito 3)
 })
 
 # Union total de campos conocidos (rechaza cualquier clave ajena).
@@ -70,6 +80,10 @@ _STRICTLY_POSITIVE: frozenset[str] = frozenset({
     # Capa 3:
     "osv_batch_max", "osv_ttl_cache_horas", "osv_timeout_total_por_lote_s",
     "watchlist_ttl_cache_horas", "watchlist_timeout_total_s",
+    # Capa 4:
+    "gray_edad_max_dias", "w_base_fabricacion", "w_base_conflacion", "w_base_typo",
+    "llm_max_calls_por_corrida", "llm_max_text_patron", "llm_max_text_rationale",
+    "llm_ttl_cache_horas", "llm_timeout_total_s", "llm_max_tokens",
 })
 
 # ---------------------------------------------------------------------------
@@ -84,6 +98,10 @@ _VALID_WATCHLIST_HOSTS: frozenset[str] = frozenset({"depscope.dev"})
 
 # Valores validos de threatintel_degraded_status (R5.2).
 _VALID_DEGRADED_STATUS: frozenset[str] = frozenset({"unverifiable", "warn"})
+
+# Capa 4 (Hito 3): host LLM permitido (conjunto cerrado, ADR-17) y niveles de effort.
+_VALID_LLM_HOSTS: frozenset[str] = frozenset({"api.anthropic.com"})
+_VALID_LLM_EFFORT: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 # Charset de rutas de API: solo caracteres URL seguros sin CRLF/espacios.
 _PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
@@ -136,6 +154,28 @@ class Config:
     watchlist_ttl_cache_horas: int = 24
     watchlist_timeout_total_s: float = 30.0
     threatintel_degraded_status: str = "unverifiable"
+
+    # --- Capa 4 — tabla R5 (Hito 3, aditivos; OFF por defecto) ---
+    enable_layer4: bool = False
+    llm_host: str = "api.anthropic.com"
+    llm_api_path: str = "/v1/messages"
+    llm_api_version: str = "2023-06-01"
+    llm_model: str = "claude-opus-4-8"
+    llm_effort: str = "low"
+    prompt_version: str = "h3-v1"
+    gray_edad_max_dias: int = 365
+    w_base_fabricacion: int = 55
+    w_base_conflacion: int = 45
+    w_base_typo: int = 40
+    llm_conf_min: float = 0.5
+    llm_max_calls_por_corrida: int = 50
+    llm_max_text_patron: int = 280
+    llm_max_text_rationale: int = 1000
+    llm_ttl_cache_horas: int = 168
+    llm_timeout_total_s: float = 30.0
+    llm_reintentos: int = 2
+    llm_unavailable_warn_frac: float = 0.2
+    llm_max_tokens: int = 512
 
 
 def load_config(
@@ -320,3 +360,15 @@ def _validate_ranges(config: Config) -> None:
         raise InvalidConfigError(
             f"'threatintel_degraded_status' debe ser uno de: {valid_str}"
         )
+    # --- Capa 4 (R5.2, Hito 3) ---
+    _validate_host_field("llm_host", config.llm_host, _VALID_LLM_HOSTS)
+    _validate_path_field("llm_api_path", config.llm_api_path)
+    if config.llm_effort not in _VALID_LLM_EFFORT:
+        valid_str = ", ".join(sorted(_VALID_LLM_EFFORT))
+        raise InvalidConfigError(f"'llm_effort' debe ser uno de: {valid_str}")
+    if not 0.0 < config.llm_conf_min <= 1.0:
+        raise InvalidConfigError("llm_conf_min debe estar en (0, 1]")
+    if not 0.0 <= config.llm_unavailable_warn_frac <= 1.0:
+        raise InvalidConfigError("llm_unavailable_warn_frac debe estar en [0, 1]")
+    if config.llm_reintentos < 0:
+        raise InvalidConfigError("llm_reintentos debe ser >= 0")

@@ -2,7 +2,7 @@
 
 Modelo aditivo con saturacion:
 
-    score = min(100, dura + min(blandas, SOFT_CAP))
+    score = min(100, dura + min(blandas_heuristicas, SOFT_CAP) + min(llm, LLM_SOFT_CAP))
 
 Señales DURAS (mutuamente excluyentes: TYPOSQUAT ⊕ NAME_UNTRUSTED):
   - TYPOSQUAT  dl=1   → 60
@@ -29,8 +29,13 @@ al default umbral_warn=50 segun ADR-01).
 NONEXISTENT (peso=0, is_soft=False) se ignora aqui: el override lo aplica verdict.py.
 UNVERIFIABLE: el orquestador nunca llama a esta funcion para deps unverificables.
 
+Canal LLM separado (Hito 3, ADR-11): LLM_HALLUCINATION_SURFACE (is_soft=True,
+is_llm_channel=True) suma en un tercer sumando acotado a LLM_SOFT_CAP (50), FUERA
+del SOFT_CAP heuristico. El gating garantiza max_hard=0 para toda dep con senal L4,
+asi que score <= 25 + 50 = 75 < umbral_block (80): la Capa 4 NUNCA bloquea (R3.1/R3.2).
+
 Sin I/O, sin red, sin reloj. Funcion pura y determinista (R5.7).
-Importa SOLO de: core.models y core.config.
+Importa SOLO de: core.models (los topes SOFT_CAP/LLM_SOFT_CAP son constantes de este modulo).
 """
 
 from __future__ import annotations
@@ -41,6 +46,12 @@ from slopguard.core.models import LayerSignal, SignalCode
 # Invariante estructural: SOFT_CAP < umbral_warn (50 default) ⟹ blandas solas
 # nunca producen warn/block (R5.6 por construccion).
 SOFT_CAP = 25
+
+# Techo del canal LLM separado (Hito 3, ADR-11). ESTRUCTURAL, NO configurable
+# (hacerlo configurable seria un footgun que romperia el anti-block).
+# Invariante anti-block por construccion: el gating garantiza max_hard=0 para toda
+# dep con senal L4, luego SOFT_CAP + LLM_SOFT_CAP = 75 < umbral_block (80 default).
+LLM_SOFT_CAP = 50
 
 # Cota maxima del score (R5.1).
 SCORE_MAX = 100
@@ -57,8 +68,12 @@ def compute_score(signals: tuple[LayerSignal, ...]) -> int:
     El lote puede estar en cualquier orden; el resultado es identico (R5.7).
     """
     hard_weight = _max_hard_weight(signals)
-    soft_total = _sum_soft_weights(signals)
-    return min(SCORE_MAX, hard_weight + min(soft_total, SOFT_CAP))
+    soft_heuristico = _sum_heuristic_soft(signals)
+    soft_llm = _sum_llm_soft(signals)
+    return min(
+        SCORE_MAX,
+        hard_weight + min(soft_heuristico, SOFT_CAP) + min(soft_llm, LLM_SOFT_CAP),
+    )
 
 
 # Señales duras de override (weight=0) que NO contribuyen al score numerico:
@@ -79,7 +94,10 @@ def _max_hard_weight(signals: tuple[LayerSignal, ...]) -> int:
     """
     best = 0
     for signal in signals:
-        if signal.is_soft:
+        # El canal LLM (is_llm_channel) NUNCA entra al canal duro (defensa en
+        # profundidad del anti-block: aunque una senal L4 saliera mal con
+        # is_soft=False, su peso no se contaria dos veces — ADR-11, §5.1 #3).
+        if signal.is_soft or signal.is_llm_channel:
             continue
         if signal.code in _OVERRIDE_HARD_CODES:
             # Override (NONEXISTENT/MALICIOUS): no contribuye al score numerico.
@@ -88,12 +106,28 @@ def _max_hard_weight(signals: tuple[LayerSignal, ...]) -> int:
     return best
 
 
-def _sum_soft_weights(signals: tuple[LayerSignal, ...]) -> int:
-    """Suma los pesos de todas las señales blandas (NEW_PACKAGE, WEAK_METADATA,
-    LOW_VERIFIABILITY). El total se acotara a SOFT_CAP en `compute_score`.
+def _sum_heuristic_soft(signals: tuple[LayerSignal, ...]) -> int:
+    """Suma los pesos de las señales blandas HEURISTICAS (NEW_PACKAGE,
+    WEAK_METADATA, LOW_VERIFIABILITY). Excluye el canal LLM (is_llm_channel),
+    que tiene su propio techo. El total se acotara a SOFT_CAP en `compute_score`.
     """
     total = 0
     for signal in signals:
-        if signal.is_soft:
+        if signal.is_soft and not signal.is_llm_channel:
+            total += signal.weight
+    return total
+
+
+def _sum_llm_soft(signals: tuple[LayerSignal, ...]) -> int:
+    """Suma los pesos del canal LLM separado (Hito 3, is_llm_channel=True).
+
+    El total se acotara a LLM_SOFT_CAP en `compute_score`. Por construccion la
+    senal L4 lleva is_soft=True, de modo que `_max_hard_weight` la ignora; este
+    filtro usa solo is_llm_channel para captar tambien una senal mal construida
+    (defensa en profundidad: jamas duplica el peso en el canal duro).
+    """
+    total = 0
+    for signal in signals:
+        if signal.is_llm_channel:
             total += signal.weight
     return total

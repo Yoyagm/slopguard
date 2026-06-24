@@ -86,7 +86,12 @@ def _add_scan_flags(parser: argparse.ArgumentParser) -> None:
         dest="manifest_type",
         help="Fuerza el tipo de parser del manifiesto.",
     )
-    # Overrides de umbrales y red (van a cli_overrides de load_config).
+    _add_override_flags(parser)
+    _add_layer3_flags(parser)
+
+
+def _add_override_flags(parser: argparse.ArgumentParser) -> None:
+    """Agrega los flags de overrides de umbrales y red (van a cli_overrides)."""
     parser.add_argument("--umbral-block", type=int, default=None, dest="umbral_block")
     parser.add_argument("--umbral-warn", type=int, default=None, dest="umbral_warn")
     parser.add_argument("--edad-minima-dias", type=int, default=None, dest="edad_minima_dias")
@@ -99,14 +104,94 @@ def _add_scan_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dl-max", type=int, default=None, dest="dl_max")
 
 
+def _add_layer3_flags(parser: argparse.ArgumentParser) -> None:
+    """Agrega los flags booleanos de Capa 3 (H2-T14, R5.1, §3.7)."""
+    parser.add_argument(
+        "--no-layer3",
+        action="store_true",
+        default=False,
+        dest="no_layer3",
+        help="Desactiva la Capa 3 (threat-intel OSV/watchlist).",
+    )
+    parser.add_argument(
+        "--enable-watchlist",
+        action="store_true",
+        default=False,
+        dest="enable_watchlist",
+        help="Activa la watchlist de alucinaciones conocidas (depscope).",
+    )
+    _add_layer3_overrides(parser)
+
+
+def _add_layer3_overrides(parser: argparse.ArgumentParser) -> None:
+    """Agrega los overrides de red/cache de Capa 3 (§3.7, R5.1).
+
+    Todos con default=None: un None en cli_overrides se ignora en load_config,
+    preservando la precedencia CLI > archivo > defaults sin colisiones.
+    """
+    parser.add_argument(
+        "--osv-host",
+        default=None,
+        dest="osv_host",
+        metavar="HOST",
+        help="Host de OSV (default: api.osv.dev).",
+    )
+    parser.add_argument(
+        "--osv-ttl-horas",
+        type=int,
+        default=None,
+        dest="osv_ttl_cache_horas",
+        metavar="N",
+        help="TTL en horas de la cache de OSV (default: 6).",
+    )
+    parser.add_argument(
+        "--osv-timeout-total",
+        type=float,
+        default=None,
+        dest="osv_timeout_total_por_lote_s",
+        metavar="S",
+        help="Presupuesto total en segundos por lote OSV (default: 30.0).",
+    )
+    parser.add_argument(
+        "--watchlist-host",
+        default=None,
+        dest="watchlist_host",
+        metavar="HOST",
+        help="Host de la watchlist (default: depscope.dev).",
+    )
+    parser.add_argument(
+        "--watchlist-ttl-horas",
+        type=int,
+        default=None,
+        dest="watchlist_ttl_cache_horas",
+        metavar="N",
+        help="TTL en horas de la cache de watchlist (default: 24).",
+    )
+
+
 def _cli_overrides(args: argparse.Namespace) -> dict[str, object]:
-    """Extrae los overrides de config desde los flags CLI (None = no pasado)."""
+    """Extrae los overrides de config desde los flags CLI (None = no pasado).
+
+    Los flags booleanos de Capa 3 se inyectan solo cuando se activan: `--no-layer3`
+    establece `enable_layer3=False`; `--enable-watchlist` establece `enable_watchlist=True`.
+    Los demas flags numericos/string usan None cuando no se pasan (no-op en `load_config`).
+    Precedencia CLI > archivo > defaults (R5.1).
+    """
     keys = (
+        # Hito 1
         "umbral_block", "umbral_warn", "edad_minima_dias", "concurrencia_max",
         "connect_timeout_s", "read_timeout_s", "reintentos_red",
         "timeout_total_por_dep_s", "jw_min", "dl_max",
+        # Capa 3 (§3.7): overrides numericos y de host
+        "osv_host", "osv_ttl_cache_horas", "osv_timeout_total_por_lote_s",
+        "watchlist_host", "watchlist_ttl_cache_horas",
     )
-    return {k: getattr(args, k, None) for k in keys}
+    overrides: dict[str, object] = {k: getattr(args, k, None) for k in keys}
+    if getattr(args, "no_layer3", False):
+        overrides["enable_layer3"] = False
+    if getattr(args, "enable_watchlist", False):
+        overrides["enable_watchlist"] = True
+    return overrides
 
 
 def _stderr(msg: str) -> None:

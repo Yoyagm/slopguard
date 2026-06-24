@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,16 +41,23 @@ from slopguard.core.adapters.concurrent import fetch_many
 from slopguard.core.adapters.registry import get_adapter
 from slopguard.core.config import Config
 from slopguard.core.errors import SlopGuardError
-from slopguard.core.layers import layer0_existence, layer1_similarity, layer2_metadata
+from slopguard.core.layers import (
+    layer0_existence,
+    layer1_similarity,
+    layer2_metadata,
+    layer3_threatintel,
+)
 from slopguard.core.manifests.detect import detect_and_parse, detect_and_parse_stdin
 from slopguard.core.models import (
     Dependency,
     DependencyResult,
     ErrorCategory,
     LayerSignal,
+    MaliceState,
     ScanReport,
     ScanSummary,
     Status,
+    ThreatIntelResult,
     Verdict,
 )
 from slopguard.core.scoring.verdict import (
@@ -58,13 +66,23 @@ from slopguard.core.scoring.verdict import (
     augment_with_dataset_note,
     build_dependency_result,
 )
+from slopguard.core.threatintel.registry import get_threatintel_source
+from slopguard.core.threatintel.resolver import resolve_threatintel
 
 if TYPE_CHECKING:
     from slopguard.core.adapters.pypi import PypiAdapter
     from slopguard.core.dataset.top_n import TopNDataset
 
-# Version del esquema de salida (§2.5); independiente de la version de la herramienta.
-_SCHEMA_VERSION = "1.0"
+# Version del esquema de salida (§2.4 Hito 2); sube 1.0 -> 1.1 de forma ADITIVA: se
+# anade el campo `advisories` y las senales `layer:3`; ninguna clave 1.0 se quita ni
+# renombra, asi un lector 1.0 ignora lo nuevo sin romperse (NFR-Compat.1). Con
+# enable_layer3=false la salida es identica al Hito 1 salvo esta version.
+_SCHEMA_VERSION = "1.1"
+
+# Razon saneada cuando una dep FOUND no aparece en el dict de threat-intel (no deberia
+# ocurrir por la cobertura total del resolver, pero se degrada a UNVERIFIABLE, jamas
+# CLEAN; §4.1 fallback conservador, NFR-Degr.1).
+_REASON_TI_AUSENTE = "threat-intel no resuelto para el nombre (cobertura incompleta)"
 
 # Rangos de orden para R6.4: menor = mas arriba en el reporte.
 _RANK_UNVERIFIABLE = 0
@@ -78,6 +96,23 @@ _UNVERIFIABLE_OUTCOME = FetchOutcome(
     state=FetchState.UNVERIFIABLE,
     error_category=ErrorCategory.NETWORK_UNVERIFIABLE,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ScanContext:
+    """Invariantes compartidos por TODA la corrida, fijados ANTES del bucle por-dep.
+
+    Agrupa los datos que no cambian entre dependencias para que las funciones de
+    evaluacion no superen la aridad (PLR0913) y para hacer explicito que son de
+    corrida, no por-dep: `now_epoch` se lee UNA vez (NFR-Det.1), `top_n` se carga una
+    vez, y `threat_intel` es el resultado del batch de Capa 3 intercalado (§4.1). Frozen
+    e inmutable: el bucle por-dep no puede mutar el entorno compartido.
+    """
+
+    config: Config
+    now_epoch: float
+    top_n: TopNDataset
+    threat_intel: dict[str, ThreatIntelResult]
 
 
 def scan_manifest(
@@ -107,7 +142,7 @@ def scan_manifest(
         deps = detect_and_parse(Path(path), config, manifest_type=manifest_type)
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
-    return _scan(deps, config, adapter)
+    return _scan(deps, config, adapter, use_cache=use_cache)
 
 
 def scan_stdin(
@@ -127,7 +162,7 @@ def scan_stdin(
         deps = detect_and_parse_stdin(text, config)
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
-    return _scan(deps, config, adapter)
+    return _scan(deps, config, adapter, use_cache=use_cache)
 
 
 def scan_dependencies(
@@ -154,7 +189,9 @@ def scan_dependencies(
         adapter = get_adapter(ecosystem_id, config=config, use_cache=use_cache)
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
-    return _scan(_normalize_and_dedup(adapter, deps), config, adapter)
+    return _scan(
+        _normalize_and_dedup(adapter, deps), config, adapter, use_cache=use_cache
+    )
 
 
 def _normalize_and_dedup(
@@ -196,12 +233,24 @@ def _scan(
     deps: tuple[Dependency, ...],
     config: Config,
     adapter: PypiAdapter,
+    *,
+    use_cache: bool,
 ) -> ScanReport:
-    """Nucleo del flujo: fetch concurrente, capas, scoring y ensamblado ordenado.
+    """Nucleo del flujo: fetch concurrente, batch threat-intel, capas y ensamblado.
 
-    Captura los errores operacionales totales que `fetch_many` pueda re-lanzar
-    desde un worker (`DatasetIntegrityError`, `InvalidConfigError`); los demas
-    fallos por-dependencia ya vienen colapsados a `UNVERIFIABLE` por el adapter.
+    Intercala (§4.1, ADR-08, RISK-H2-3) un viaje en lote de Capa 3 ENTRE la Capa 0
+    (concurrente, per-dep) y el bucle de evaluacion por-dep: tras `fetch_many` recolecta
+    los nombres FOUND (R1.5; NOT_FOUND/UNVERIFIABLE excluidos), los resuelve en lote con
+    `resolve_threatintel` (fail-closed: chunk caido ⇒ UNVERIFIABLE, jamas CLEAN), y luego
+    inyecta `ti[name]` como entrada PURA a la Capa 3 por-dep, preservando el orden 0→1→2→3.
+
+    `now_epoch` se lee UNA sola vez DESPUES del batch (NFR-Det.1): el batch no usa reloj de
+    pared para su veredicto, asi que la edad de Capa 0 sigue siendo reproducible. Con
+    `enable_layer3=false` la fuente es None, `ti={}` y el flujo es identico al Hito 1 (R5.3).
+
+    Captura los errores operacionales totales que `fetch_many` pueda re-lanzar desde un
+    worker (`DatasetIntegrityError`, `InvalidConfigError`); los demas fallos por-dependencia
+    ya vienen colapsados a `UNVERIFIABLE` por el adapter.
     """
     if not deps:
         return _empty_report(adapter.ecosystem_id)
@@ -210,67 +259,119 @@ def _scan(
     except SlopGuardError as exc:
         return _error_report(exc, adapter.ecosystem_id)
 
-    now_epoch = time.time()  # NFR-Det.1: una sola lectura del reloj por corrida.
-    top_n = adapter.load_top_n()
+    found = _found_names(outcomes)  # R1.5: solo existentes van al batch de Capa 3.
+    source = get_threatintel_source(config, use_cache=use_cache)
+    threat_intel = resolve_threatintel(source, found, config)
+
+    now_epoch = time.time()  # NFR-Det.1: una sola lectura del reloj, tras el batch.
+    ctx = _ScanContext(
+        config=config,
+        now_epoch=now_epoch,
+        top_n=adapter.load_top_n(),
+        threat_intel=threat_intel,
+    )
     results = tuple(
-        _evaluate_dependency(dep, outcomes.get(dep.name), config, now_epoch, top_n)
-        for dep in deps
+        _evaluate_dependency(dep, outcomes.get(dep.name), ctx) for dep in deps
     )
     return _assemble_report(results, adapter.ecosystem_id)
+
+
+def _found_names(outcomes: dict[str, FetchOutcome]) -> tuple[str, ...]:
+    """Recolecta los nombres con `state==FOUND` desde las CLAVES de `outcomes` (R1.5).
+
+    Derivar de las claves (no de `dep.name`) garantiza que `found` use la MISMA
+    normalizacion que el lookup `ti.get(dep.name)` del bucle (ambos son nombres ya
+    normalizados PEP 503): cierra el hueco de un falso CLEAN encubierto si una dep
+    entrara a OSV con una normalizacion distinta (§4.1, finding bloqueante). Los
+    NOT_FOUND/UNVERIFIABLE se excluyen: no se consulta OSV de inexistentes/no verificables.
+    """
+    return tuple(
+        name for name, outcome in outcomes.items() if outcome.state is FetchState.FOUND
+    )
 
 
 def _evaluate_dependency(
     dep: Dependency,
     outcome: FetchOutcome | None,
-    config: Config,
-    now_epoch: float,
-    top_n: TopNDataset,
+    ctx: _ScanContext,
 ) -> DependencyResult:
-    """Evalua una dependencia: capas 0/1/2 -> senales -> veredicto (R5.2-5.8).
+    """Evalua una dependencia: capas 0/1/2/3 -> senales -> veredicto (R5.2-5.8).
 
     Si el `FetchOutcome` es UNVERIFIABLE (o ausente por un fallo de despacho), no
     se corre scoring: la dep queda `unverifiable`, sin score y nunca `allow`
-    (R5.8). En caso contrario se recolectan las senales de las tres capas y se
-    delega el veredicto/override a `build_dependency_result`.
+    (R5.8). En caso contrario se recolectan las senales de las cuatro capas (la
+    Capa 3 solo para FOUND, R1.5) y se delega el veredicto/override a
+    `build_dependency_result`.
     """
     resolved = outcome if outcome is not None else _UNVERIFIABLE_OUTCOME
     if resolved.state is FetchState.UNVERIFIABLE:
         return build_dependency_result(
-            _unverifiable_context(dep, resolved), (), config
+            _unverifiable_context(dep, resolved), (), ctx.config
         )
 
-    signals = _collect_signals(dep.name, resolved, config, now_epoch, top_n)
-    if resolved.state is FetchState.NOT_FOUND and dep.name in top_n.members:
+    signals = _collect_signals(dep.name, resolved, ctx)
+    if resolved.state is FetchState.NOT_FOUND and dep.name in ctx.top_n.members:
         # Prioridad Capa 0 sobre top-N (R3.8): el 404 prevalece y se anota el
         # posible desfase del dataset embebido.
         signals = augment_with_dataset_note(signals)
-    ctx = DepContext(
+    dep_ctx = DepContext(
         name=dep.name,
         version_pin=dep.version_pin,
         is_unverifiable=False,
         error_category=None,
     )
-    return build_dependency_result(ctx, signals, config)
+    return build_dependency_result(dep_ctx, signals, ctx.config)
 
 
 def _collect_signals(
     name: str,
     outcome: FetchOutcome,
-    config: Config,
-    now_epoch: float,
-    top_n: TopNDataset,
+    ctx: _ScanContext,
 ) -> tuple[LayerSignal, ...]:
-    """Recolecta las senales de las capas 0, 1 y 2 en orden fijo (NFR-Det.1).
+    """Recolecta las senales de las capas 0, 1, 2 y 3 en orden fijo (NFR-Det.1).
 
-    El orden de capas es estable (L0 -> L1 -> L2) y cada capa consume solo la
-    informacion de su `FetchOutcome`/dataset; el scorer es invariante al orden,
-    pero mantenerlo fijo facilita la explicacion y los tests (R5.7).
+    El orden de capas es estable (L0 -> L1 -> L2 -> L3) y cada capa consume solo la
+    informacion de su entrada PURA inyectada; el scorer es invariante al orden, pero
+    mantenerlo fijo facilita la explicacion y los tests (R5.7). La Capa 3 solo corre
+    para FOUND (R1.5): un 404 no consulta OSV, asi que su nombre no esta en `threat_intel`.
     """
+    config = ctx.config
     signals: list[LayerSignal] = []
-    signals.extend(layer0_existence.evaluate(outcome, config, now_epoch=now_epoch))
-    signals.extend(layer1_similarity.evaluate(name, top_n, config))
+    signals.extend(layer0_existence.evaluate(outcome, config, now_epoch=ctx.now_epoch))
+    signals.extend(layer1_similarity.evaluate(name, ctx.top_n, config))
     signals.extend(layer2_metadata.evaluate(outcome, config))
+    layer3_result = _threat_intel_for(name, outcome, ctx.threat_intel)
+    if layer3_result is not None:
+        signals.extend(layer3_threatintel.evaluate(layer3_result))
     return tuple(signals)
+
+
+def _threat_intel_for(
+    name: str,
+    outcome: FetchOutcome,
+    threat_intel: dict[str, ThreatIntelResult],
+) -> ThreatIntelResult | None:
+    """Resuelve la entrada de Capa 3 para `name`, o None si no aplica (§4.1, R1.5).
+
+    Tres casos, en orden:
+    - `threat_intel` vacio (enable_layer3=false) o dep NO FOUND ⇒ None: la Capa 3 NO
+      emite senal (comportamiento identico al Hito 1; un 404/UNVERIFIABLE no consulta OSV).
+    - dep FOUND con entrada en el dict ⇒ su `ThreatIntelResult` real (CLEAN/MALICIOUS/
+      KNOWN_HALLUCINATION/UNVERIFIABLE), inyectado como dato puro a la Capa 3.
+    - dep FOUND SIN entrada pese a haber fuente activa (cobertura incompleta, no deberia
+      ocurrir por la cobertura total del resolver) ⇒ UNVERIFIABLE conservador, jamas CLEAN
+      (NFR-Degr.1): una dep FOUND nunca cae silenciosamente a "Capa 3 sin evaluar".
+    """
+    if not threat_intel or outcome.state is not FetchState.FOUND:
+        return None
+    result = threat_intel.get(name)
+    if result is not None:
+        return result
+    return ThreatIntelResult(
+        name=name,
+        state=MaliceState.UNVERIFIABLE,
+        unverifiable_reason=_REASON_TI_AUSENTE,
+    )
 
 
 def _unverifiable_context(dep: Dependency, outcome: FetchOutcome) -> DepContext:

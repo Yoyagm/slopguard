@@ -23,13 +23,40 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Final, TypeVar
 
 from ..adapters.base import FetchOutcome, FetchState, PackageMetadata
+from ..errors import NetworkUnverifiableError
+from ..net.safe_json import safe_json_loads
 
 # Version del esquema de la entrada en disco. Un valor distinto ⇒ miss (esquema viejo).
 _CACHE_SCHEMA_VERSION = "1"
+
+# Cota dura de tamano de un archivo de cache ANTES de leerlo (RISK-H2-2, JSON-bomb):
+# el archivo de cache es entrada NO confiable (otro proceso/usuario con acceso a
+# ~/.cache/slopguard puede manipularlo). `os.stat` rechaza un archivo gigante sin
+# materializarlo en memoria; alineado con `max_response_bytes` del transporte (Hito 1).
+_CACHE_MAX_BYTES: Final[int] = 10_000_000
+
+# Profundidad maxima de anidamiento JSON al leer un blob de cache. Se delega en
+# `safe_json_loads` (igual que el transporte del Hito 1), que rechaza la bomba ANTES
+# de materializar el arbol completo, en vez de `json.loads` directo. Alineado con el
+# default `max_json_depth` de la config del Hito 1.
+_CACHE_MAX_JSON_DEPTH: Final[int] = 50
+
+# Version del esquema de los blobs genericos de threat-intel (Hito 2, §2.5). Separa
+# por construccion la cache L3 de la cache tipada del Hito 1 (`_CACHE_SCHEMA_VERSION="1"`):
+# un valor distinto ⇒ miss, sin posibilidad de mezclar ambos contratos.
+_BLOB_SCHEMA_VERSION: Final = "ti-1"
+
+# Estado que JAMAS debe persistirse en un blob (degradacion segura, §2.5/ADR-10): un
+# blob con `state=="unverifiable"` se rechaza al escribir y se trata como miss al leer.
+_UNVERIFIABLE_STATE: Final = "unverifiable"
+
+# Tipo del modelo de dominio reconstruido por el validador inyectado (OSV/watchlist).
+_T = TypeVar("_T")
 
 # Estados que SI se persisten. UNVERIFIABLE queda fuera a proposito (§2.6).
 _CACHEABLE_STATES = frozenset({FetchState.FOUND, FetchState.NOT_FOUND})
@@ -93,6 +120,86 @@ class DiskCache:
         payload = self._serialize(ecosystem, name, outcome, fetched_at)
         self._atomic_write(self._path_for(ecosystem, name), payload)
 
+    def get_blob(
+        self,
+        namespace: str,
+        key: str,
+        validator: Callable[[dict[str, Any]], _T | None],
+        *,
+        ttl_segundos: int,
+        now: float | None = None,
+    ) -> _T | None:
+        """Lee un blob JSON generico, namespaced, validado como entrada NO confiable.
+
+        Complementa `get` (camino tipado del Hito 1) sin tocarlo: lo usa la Capa 3 para
+        cachear respuestas de OSV/watchlist (§2.5). Miss (devuelve None) si la cache esta
+        deshabilitada, el archivo falta, el JSON es ilegible/no-objeto, el
+        `cache_schema_version` no es `"ti-1"`, el TTL vencio, o el `validator` inyectado
+        (esquema/charset/cap propios de la fuente) rechaza el payload. `validator` reconstruye
+        el modelo de dominio (`core.threatintel` no se importa aqui: la frontera lo prohibe).
+        `ttl_segundos` es por-llamada (OSV 6h ≠ watchlist 24h); `now` inyectable (NFR-Det.1).
+        """
+        if not self._enabled:
+            return None
+        payload = self._read_json(self._blob_path_for(namespace, key))
+        if payload is None:
+            return None
+        if payload.get("cache_schema_version") != _BLOB_SCHEMA_VERSION:
+            return None  # esquema distinto al contrato L3 ⇒ miss (separa del Hito 1)
+        reference_now = time.time() if now is None else now
+        if self._blob_expired(payload.get("fetched_at"), reference_now, ttl_segundos):
+            return None
+        return validator(payload)
+
+    def put_blob(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Persiste un blob JSON generico de forma atomica (0700/0600), namespaced.
+
+        No-op si la cache esta deshabilitada (`--no-cache`, R6.3) o si el payload representa
+        un estado `unverifiable` (degradacion segura: los fallos transitorios NUNCA se cachean,
+        §2.5/ADR-10). `cache_schema_version` y `fetched_at` los fija ESTE metodo (no se confia
+        en que el caller los ponga): garantiza consistencia y que la validacion al leer no
+        dependa de datos del caller. `now` inyectable para `fetched_at` determinista (NFR-Det.1).
+        """
+        if not self._enabled:
+            return
+        if payload.get("state") == _UNVERIFIABLE_STATE:
+            return  # defensa en profundidad: el caller no debe pasar UNVERIFIABLE; aqui se rechaza
+        fetched_at = time.time() if now is None else now
+        stamped = {
+            **payload,
+            "cache_schema_version": _BLOB_SCHEMA_VERSION,
+            "fetched_at": fetched_at,
+        }
+        self._atomic_write(self._blob_path_for(namespace, key), stamped)
+
+    def _blob_path_for(self, namespace: str, key: str) -> Path:
+        """Ruta del blob: `sha256(f"{namespace}:{key}")` ⇒ sin path traversal posible.
+
+        El namespace (`osv`/`watchlist`) separa por construccion estas claves de las del
+        camino tipado (`f"{ecosystem}:{name}"`): el hexdigest solo contiene `[0-9a-f]`.
+        """
+        digest = hashlib.sha256(f"{namespace}:{key}".encode()).hexdigest()
+        return self._root / f"{digest}.json"
+
+    def _blob_expired(self, fetched_at: Any, now: float, ttl_segundos: int) -> bool:
+        """True si falta el timestamp, es invalido, esta en el futuro o vencio el TTL del blob.
+
+        Identico criterio defensivo que `_is_expired`, pero con `ttl_segundos` por-llamada
+        (OSV y watchlist tienen TTLs distintos) en vez del TTL del constructor.
+        """
+        if isinstance(fetched_at, bool) or not isinstance(fetched_at, (int, float)):
+            return True
+        if fetched_at < 0 or fetched_at > now:
+            return True  # timestamp absurdo (futuro/negativo) ⇒ tratar como invalido
+        return (now - fetched_at) > ttl_segundos
+
     def _path_for(self, ecosystem: str, name: str) -> Path:
         """Ruta del archivo de cache: hash sha256 ⇒ sin path traversal posible."""
         key = f"{ecosystem}:{name}".encode()
@@ -100,15 +207,25 @@ class DiskCache:
         return self._root / f"{digest}.json"
 
     def _read_json(self, path: Path) -> dict[str, Any] | None:
-        """Lee y parsea el JSON del archivo. None si ausente, ilegible o no es objeto."""
+        """Lee y parsea el JSON del archivo tratandolo como entrada NO confiable.
+
+        None si ausente, ilegible, sobre la cota de tamano, anidamiento patologico
+        (JSON-bomb) o no es objeto. La cota de tamano (`os.stat` antes de leer) acota
+        un archivo manipulado de cientos de MiB sin materializarlo; el parseo via
+        `safe_json_loads` rechaza un anidamiento > `_CACHE_MAX_JSON_DEPTH` ANTES de
+        construir el arbol (RISK-H2-2), a diferencia de `json.loads` directo. Comparte
+        con el camino tipado del Hito 1 (`get`): el endurecimiento es aditivo.
+        """
         try:
+            if path.stat().st_size > _CACHE_MAX_BYTES:
+                return None  # archivo manipulado/gigante ⇒ miss sin leerlo a memoria
             raw = path.read_bytes()
         except OSError:
             return None  # ausente o ilegible ⇒ miss, sin crashear
         try:
-            payload = json.loads(raw)
-        except (ValueError, UnicodeDecodeError):
-            return None  # corrupto ⇒ miss (JSON-only, nunca eval/pickle)
+            payload = safe_json_loads(raw, _CACHE_MAX_JSON_DEPTH)
+        except NetworkUnverifiableError:
+            return None  # corrupto o JSON-bomb ⇒ miss (JSON-only, nunca eval/pickle)
         return payload if isinstance(payload, dict) else None
 
     def _deserialize(

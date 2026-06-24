@@ -17,6 +17,7 @@ import pytest
 
 from slopguard.core.config import Config
 from slopguard.core.models import (
+    Advisory,
     DependencyResult,
     ErrorCategory,
     Layer,
@@ -909,3 +910,351 @@ class TestAugmentWithDatasetNote:
 
     def test_tupla_vacia(self) -> None:
         assert augment_with_dataset_note(()) == ()
+
+
+# ===========================================================================
+# H2-T11 — Capa 3 threat-intel en scoring/veredicto (RISK-H2-4, ADR-06/07/10)
+# ===========================================================================
+
+_W_KNOWN_HALLUCINATION = 85
+
+_ADVISORY = Advisory(
+    id="MAL-2025-47868",
+    kind="malicious",
+    url="https://osv.dev/vulnerability/MAL-2025-47868",
+    source="osv",
+)
+
+
+def _sig_malicious(advisories: tuple[Advisory, ...] = (_ADVISORY,)) -> LayerSignal:
+    """Señal L3 MALICIOUS: dura, weight=0, porta los Advisory (ADR-06)."""
+    return LayerSignal(
+        layer=Layer.L3,
+        code=SignalCode.MALICIOUS,
+        weight=0,
+        is_soft=False,
+        detail="Reportado como malicioso por OSV (MAL-2025-47868). No instalar.",
+        suspected_target=None,
+        advisories=advisories,
+    )
+
+
+def _sig_known_hallucination() -> LayerSignal:
+    """Señal L3 KNOWN_HALLUCINATION: dura, weight=85 (>= umbral_block, ADR-07)."""
+    return LayerSignal(
+        layer=Layer.L3,
+        code=SignalCode.KNOWN_HALLUCINATION,
+        weight=_W_KNOWN_HALLUCINATION,
+        is_soft=False,
+        detail="Nombre alucinado conocido (corpus depscope-hallucinations, 2026-06-20).",
+        suspected_target=None,
+    )
+
+
+def _sig_ti_unverifiable() -> LayerSignal:
+    """Señal L3 THREATINTEL_UNVERIFIABLE: blanda, weight=0 (ADR-10, anti-FP)."""
+    return LayerSignal(
+        layer=Layer.L3,
+        code=SignalCode.THREATINTEL_UNVERIFIABLE,
+        weight=0,
+        is_soft=True,
+        detail="Threat-intel no verificable: timeout en OSV.",
+        suspected_target=None,
+    )
+
+
+def _cfg_degraded(status: str) -> Config:
+    """Config con threatintel_degraded_status configurado (unverifiable|warn)."""
+    return Config(threatintel_degraded_status=status)
+
+
+class TestScorerL3:
+    """Scorer: KNOWN_HALLUCINATION participa en _max_hard_weight; MALICIOUS se excluye."""
+
+    def test_known_hallucination_score_85(self) -> None:
+        """KNOWN_HALLUCINATION (dura 85) produce score 85 ⇒ block por score (ADR-07)."""
+        assert compute_score((_sig_known_hallucination(),)) == 85
+
+    def test_known_hallucination_block_con_defaults(self) -> None:
+        assert score_to_verdict(85, _DEFAULT_CFG) is Verdict.BLOCK
+
+    def test_known_hallucination_calibrable_umbral_alto(self) -> None:
+        """Con umbral_block=90, KNOWN_HALLUCINATION(85) degrada a warn (ADR-07, calibrable)."""
+        cfg = Config(umbral_warn=50, umbral_block=90)
+        assert score_to_verdict(85, cfg) is Verdict.WARN
+
+    def test_malicious_excluido_del_scorer(self) -> None:
+        """MALICIOUS (override weight=0) no contribuye al score (simetria con NONEXISTENT)."""
+        assert compute_score((_sig_malicious(),)) == 0
+
+    def test_malicious_no_eleva_con_blandas(self) -> None:
+        assert compute_score((_sig_malicious(), _sig_new_package())) == 15
+
+    def test_known_hallucination_mas_blandas_satura_pero_domina(self) -> None:
+        """KNOWN_HALLUCINATION(85) + blandas_max(25) ⇒ min(100, 85+25)=100."""
+        signals = (
+            _sig_known_hallucination(),
+            _sig_new_package(),
+            _sig_weak_metadata(5),
+            _sig_low_verif(5),
+        )
+        assert compute_score(signals) == 100
+
+    def test_known_hallucination_vs_typosquat_toma_mayor(self) -> None:
+        """Dos duras: el scorer toma el maximo (85 > 60)."""
+        assert compute_score((_sig_known_hallucination(), _sig_typosquat(60))) == 85
+
+    def test_ti_unverifiable_no_contribuye(self) -> None:
+        """THREATINTEL_UNVERIFIABLE (blanda weight=0) no suma al score (anti-FP)."""
+        assert compute_score((_sig_ti_unverifiable(),)) == 0
+
+
+class TestVeredictoMalicious:
+    """Rama _has_malicious: override de block, precedencia maxima (ADR-06, R3.1)."""
+
+    def test_malicious_da_block_score_none(self) -> None:
+        result = build_dependency_result(_ctx("bioql"), (_sig_malicious(),), _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score is None
+        assert result.status is Status.OK
+
+    def test_malicious_pobla_advisories(self) -> None:
+        """build_dependency_result traslada los Advisory de la señal a DependencyResult."""
+        result = build_dependency_result(_ctx("bioql"), (_sig_malicious(),), _DEFAULT_CFG)
+        assert result.advisories == (_ADVISORY,)
+
+    def test_malicious_inmune_a_umbral_block_alto(self) -> None:
+        """El override es inmune a config (a diferencia de KNOWN_HALLUCINATION, ADR-06)."""
+        cfg = Config(umbral_warn=10, umbral_block=99)
+        result = build_dependency_result(_ctx("bioql"), (_sig_malicious(),), cfg)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score is None
+
+    def test_malicious_precede_a_nonexistent(self) -> None:
+        """MALICIOUS + NONEXISTENT ⇒ block, ambas reportadas (R3.4, ADR-06 precedencia max)."""
+        signals = (_sig_nonexistent(), _sig_malicious())
+        result = build_dependency_result(_ctx("bioql"), signals, _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score is None
+        assert result.advisories == (_ADVISORY,)
+        assert {s.code for s in result.signals} == {
+            SignalCode.NONEXISTENT, SignalCode.MALICIOUS,
+        }
+
+    def test_malicious_precede_a_typosquat(self) -> None:
+        signals = (_sig_typosquat(_W_TYPOSQUAT_DL1), _sig_malicious())
+        result = build_dependency_result(_ctx("bioql"), signals, _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score is None
+
+    def test_malicious_mas_ti_unverifiable_no_degrada(self) -> None:
+        """MALICIOUS + THREATINTEL_UNVERIFIABLE ⇒ block; la malicia domina, no degrada."""
+        signals = (_sig_malicious(), _sig_ti_unverifiable())
+        result = build_dependency_result(_ctx("bioql"), signals, _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.status is Status.OK
+        assert result.advisories == (_ADVISORY,)
+
+    def test_malicious_multiples_advisories(self) -> None:
+        adv2 = Advisory(
+            id="MAL-2025-99999", kind="malicious",
+            url="https://osv.dev/vulnerability/MAL-2025-99999", source="osv",
+        )
+        signals = (_sig_malicious((_ADVISORY, adv2)),)
+        result = build_dependency_result(_ctx("bioql"), signals, _DEFAULT_CFG)
+        assert result.advisories == (_ADVISORY, adv2)
+
+    def test_is_unverifiable_l0_precede_a_todo_pero_no_lo_activa_l3(self) -> None:
+        """ctx.is_unverifiable (SOLO de Capa 0) precede; sin MALICIOUS no hay advisories."""
+        result = build_dependency_result(
+            _ctx("ghost", is_unverifiable=True), (_sig_ti_unverifiable(),), _DEFAULT_CFG,
+        )
+        assert result.status is Status.UNVERIFIABLE
+        assert result.verdict is None
+        assert result.advisories == ()
+
+
+class TestVeredictoKnownHallucination:
+    """KNOWN_HALLUCINATION: block por SCORE (no override), respeta config (ADR-07)."""
+
+    def test_known_hallucination_block_por_score(self) -> None:
+        result = build_dependency_result(_ctx("reqe"), (_sig_known_hallucination(),), _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score == 85  # NO None: bloquea por score, no por override.
+        assert result.status is Status.OK
+        assert result.advisories == ()
+
+    def test_known_hallucination_mas_nonexistent_block(self) -> None:
+        """NONEXISTENT (override) intercepta antes; block igualmente (R2.4)."""
+        signals = (_sig_known_hallucination(), _sig_nonexistent())
+        result = build_dependency_result(_ctx("reqe"), signals, _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score is None  # override 404 fija score=None.
+
+    def test_known_hallucination_mas_ti_unverifiable_block_domina(self) -> None:
+        """KNOWN_HALLUCINATION(85) + THREATINTEL_UNVERIFIABLE ⇒ block por score, no degrada."""
+        signals = (_sig_known_hallucination(), _sig_ti_unverifiable())
+        result = build_dependency_result(_ctx("reqe"), signals, _DEFAULT_CFG)
+        assert result.verdict is Verdict.BLOCK
+        assert result.score == 85
+        assert result.status is Status.OK
+
+
+class TestVeredictoThreatintelUnverifiable:
+    """Rama 5 de §3.5: degradacion segura segun threatintel_degraded_status (ADR-10)."""
+
+    def test_solo_unverif_default_status_unverifiable(self) -> None:
+        """Default 'unverifiable': dep limpia + OSV caido ⇒ status=unverifiable, nunca allow."""
+        result = build_dependency_result(_ctx("flaky"), (_sig_ti_unverifiable(),), _DEFAULT_CFG)
+        assert result.status is Status.UNVERIFIABLE
+        assert result.verdict is None
+        assert result.score is None
+
+    def test_solo_unverif_warn_valvula(self) -> None:
+        """Valvula 'warn': dep limpia + OSV caido ⇒ warn (exit 1 sin strict)."""
+        result = build_dependency_result(
+            _ctx("flaky"), (_sig_ti_unverifiable(),), _cfg_degraded("warn"),
+        )
+        assert result.status is Status.OK
+        assert result.verdict is Verdict.WARN
+
+    def test_blandas_mas_unverif_default_unverifiable(self) -> None:
+        """blandas (NEW_PACKAGE) + THREATINTEL_UNVERIFIABLE, default ⇒ unverifiable (no allow)."""
+        signals = (_sig_new_package(), _sig_ti_unverifiable())
+        result = build_dependency_result(_ctx("flaky"), signals, _DEFAULT_CFG)
+        assert result.status is Status.UNVERIFIABLE
+        assert result.verdict is None
+
+    def test_warn_dominante_no_degrada_a_unverifiable(self) -> None:
+        """Un warn por score (typosquat dl=1) DOMINA sobre el threat-intel caido (ADR-10)."""
+        signals = (_sig_typosquat(_W_TYPOSQUAT_DL1), _sig_ti_unverifiable())
+        result = build_dependency_result(_ctx("reqursts"), signals, _DEFAULT_CFG)
+        assert result.verdict is Verdict.WARN
+        assert result.score == 60
+        assert result.status is Status.OK
+
+    def test_unverif_nunca_allow(self) -> None:
+        """Fail-closed: con THREATINTEL_UNVERIFIABLE el resultado nunca es allow."""
+        for status in ("unverifiable", "warn"):
+            result = build_dependency_result(
+                _ctx("flaky"), (_sig_ti_unverifiable(),), _cfg_degraded(status),
+            )
+            assert result.verdict is not Verdict.ALLOW
+
+
+# (caso, señales, degraded_status, status, verdict, score) — tabla exhaustiva §3.5
+_TABLA_L3_PRECEDENCIA: list[
+    tuple[str, tuple[LayerSignal, ...], str, Status, Verdict | None, int | None]
+] = [
+    ("malicious", (_sig_malicious(),), "unverifiable", Status.OK, Verdict.BLOCK, None),
+    (
+        "malicious_mas_nonexistent",
+        (_sig_malicious(), _sig_nonexistent()), "unverifiable", Status.OK, Verdict.BLOCK, None,
+    ),
+    (
+        "malicious_mas_typosquat",
+        (_sig_malicious(), _sig_typosquat(60)), "unverifiable", Status.OK, Verdict.BLOCK, None,
+    ),
+    (
+        "malicious_mas_ti_unverif",
+        (_sig_malicious(), _sig_ti_unverifiable()), "unverifiable", Status.OK, Verdict.BLOCK, None,
+    ),
+    ("nonexistent_solo", (_sig_nonexistent(),), "unverifiable", Status.OK, Verdict.BLOCK, None),
+    (
+        "typosquat_dl1_warn",
+        (_sig_typosquat(60),), "unverifiable", Status.OK, Verdict.WARN, 60,
+    ),
+    (
+        "known_hallucination_block_85",
+        (_sig_known_hallucination(),), "unverifiable", Status.OK, Verdict.BLOCK, 85,
+    ),
+    (
+        "known_hallucination_mas_ti_unverif",
+        (_sig_known_hallucination(), _sig_ti_unverifiable()),
+        "unverifiable", Status.OK, Verdict.BLOCK, 85,
+    ),
+    (
+        "solo_ti_unverif_default",
+        (_sig_ti_unverifiable(),), "unverifiable", Status.UNVERIFIABLE, None, None,
+    ),
+    (
+        "solo_ti_unverif_warn",
+        (_sig_ti_unverifiable(),), "warn", Status.OK, Verdict.WARN, 0,
+    ),
+    (
+        "blandas_mas_ti_unverif_default",
+        (_sig_new_package(), _sig_ti_unverifiable()),
+        "unverifiable", Status.UNVERIFIABLE, None, None,
+    ),
+    (
+        "blandas_solas_sin_l3",
+        (_sig_new_package(),), "unverifiable", Status.OK, Verdict.ALLOW, 15,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "caso,signals,degraded,status_esp,verdict_esp,score_esp",
+    _TABLA_L3_PRECEDENCIA,
+    ids=[c[0] for c in _TABLA_L3_PRECEDENCIA],
+)
+def test_tabla_exhaustiva_precedencia_l3(
+    caso: str,
+    signals: tuple[LayerSignal, ...],
+    degraded: str,
+    status_esp: Status,
+    verdict_esp: Verdict | None,
+    score_esp: int | None,
+) -> None:
+    """Tabla exhaustiva de §3.5: precedencia de overrides L3 + degradacion (RISK-H2-4)."""
+    result = build_dependency_result(_ctx("pkg"), signals, _cfg_degraded(degraded))
+    assert result.status is status_esp, f"[{caso}] status"
+    assert result.verdict is verdict_esp, f"[{caso}] verdict"
+    assert result.score == score_esp, f"[{caso}] score"
+
+
+# (degraded_status, strict, exit_esperado) — tabla de la triada de ADR-10
+_TABLA_TRIADA: list[tuple[str, bool, int]] = [
+    ("unverifiable", False, 3),
+    ("unverifiable", True, 3),   # strict no toca unverifiable.
+    ("warn", False, 1),
+    ("warn", True, 2),           # strict eleva el warn de threat-intel a exit 2.
+]
+
+
+@pytest.mark.parametrize(
+    "degraded,strict,exit_esp", _TABLA_TRIADA,
+    ids=[f"{d}-strict_{s}" for d, s, _ in _TABLA_TRIADA],
+)
+def test_triada_degraded_status_por_strict(degraded: str, strict: bool, exit_esp: int) -> None:
+    """Triada ADR-10: dep limpia + OSV caido x degraded_status x --strict ⇒ exit (RISK-H2-4)."""
+    result = build_dependency_result(
+        _ctx("flaky"), (_sig_ti_unverifiable(),), _cfg_degraded(degraded),
+    )
+    report = _make_report((result,))
+    assert aggregate_exit_code(report, strict=strict) == exit_esp
+
+
+class TestPropiedadAntiFPConL3:
+    """R3.3: blandas + THREATINTEL_UNVERIFIABLE nunca cruzan umbral_warn por score."""
+
+    def test_blandas_mas_ti_unverif_score_bajo_soft_cap(self) -> None:
+        """El score de blandas+THREATINTEL_UNVERIFIABLE nunca supera SOFT_CAP (anti-FP intacta)."""
+        signals = (
+            _sig_new_package(), _sig_weak_metadata(5), _sig_low_verif(5),
+            _sig_ti_unverifiable(),
+        )
+        assert compute_score(signals) <= SOFT_CAP
+        assert compute_score(signals) < _DEFAULT_CFG.umbral_warn
+
+    def test_ti_unverif_solo_score_cero(self) -> None:
+        assert compute_score((_sig_ti_unverifiable(),)) == 0
+
+    def test_permutaciones_l3_mismo_resultado(self) -> None:
+        """Determinismo (R5.7): el orden de las señales L3 no altera el veredicto."""
+        signals = [_sig_malicious(), _sig_nonexistent(), _sig_new_package()]
+        for perm in itertools.permutations(signals):
+            result = build_dependency_result(_ctx("bioql"), tuple(perm), _DEFAULT_CFG)
+            assert result.verdict is Verdict.BLOCK
+            assert result.score is None
+            assert result.advisories == (_ADVISORY,)

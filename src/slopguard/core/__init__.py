@@ -23,6 +23,11 @@ El `strict` NO es parametro de `scan_*` (la API §3.1 lo deja fuera): el reporte
 trae un `exit_code` base en su summary y la CLI aplica `aggregate_exit_code(
 report, strict=...)` con su flag `--strict`. Asi el motor permanece puro y la
 politica de severidad de CI vive en una unica funcion (R7.6).
+
+Extension Hito 2 (H2-T13, aditiva): se re-exportan `Advisory` y `MaliceState`
+(ambos en `core.models`, modulo hoja) para que la CLI (H2-T14) los use sin romper
+la frontera import-linter `core ✗→ cli`. `load_config` ya expone los 13 defaults
+de Capa 3 a traves de `Config` sin cambios de firma (R5.1, R5.3, tabla R5).
 """
 
 from __future__ import annotations
@@ -37,11 +42,13 @@ from slopguard.core.errors import (
     SlopGuardError,
 )
 from slopguard.core.models import (
+    Advisory,
     Dependency,
     DependencyResult,
     ErrorCategory,
     Layer,
     LayerSignal,
+    MaliceState,
     ScanReport,
     ScanSummary,
     SignalCode,
@@ -51,7 +58,11 @@ from slopguard.core.models import (
 from slopguard.core.scoring.verdict import aggregate_exit_code
 
 # Orden isort-style (RUF022): clases/enums primero, luego funciones; alfabetico.
+# Los simbolos de Hito 2 (Advisory, MaliceState) se insertan en orden alfabetico
+# sin desplazar ni renombrar ninguno del Hito 1 (garantia de retro-compatibilidad).
 __all__ = [
+    # Hito 2: modelos de threat-intel (hojas en core.models, frontera segura).
+    "Advisory",
     "Config",
     # Errores del dominio (§3.6).
     "DatasetIntegrityError",
@@ -61,6 +72,8 @@ __all__ = [
     "InvalidConfigError",
     "Layer",
     "LayerSignal",
+    # Hito 2: estado de malicia (hoja en core.models).
+    "MaliceState",
     "ManifestParseError",
     "NetworkUnverifiableError",
     "ScanReport",

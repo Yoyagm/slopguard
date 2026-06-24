@@ -44,11 +44,11 @@
 \pagestyle{fancy}
 \fancyhf{}
 \lhead{\small SlopGuard --- Documento Técnico}
-\rhead{\small Hito 1}
+\rhead{\small Hito 2}
 \cfoot{\thepage}
 \renewcommand{\headrulewidth}{0.3pt}
 
-\title{\textbf{SlopGuard}\\[2pt]\large Guardián pre-instalación contra \emph{slopsquatting}\\[6pt]\normalsize Documento Técnico --- Hito 1}
+\title{\textbf{SlopGuard}\\[2pt]\large Guardián pre-instalación contra \emph{slopsquatting}\\[6pt]\normalsize Documento Técnico --- Hitos 1 y 2}
 \author{Equipo de Ingeniería}
 \date{\today}
 
@@ -60,21 +60,27 @@
 \noindent
 SlopGuard es una herramienta de línea de comandos que escanea las dependencias
 Python de un proyecto y detecta paquetes inexistentes (alucinados por modelos de
-lenguaje), \emph{typosquatting} o de metadatos sospechosos \textbf{antes} de
-instalarlos. El \textbf{Hito 1} entrega un motor de \emph{scoring} determinista y
-extensible, un adaptador para PyPI y tres capas de detección (existencia/edad,
-similaridad de nombres y metadatos), expuestas vía CLI con salida explicable y
-\emph{exit codes} estables para CI. No usa LLMs, embeddings ni servicios de pago:
-solo la PyPI JSON API (gratuita) y un dataset embebido y verificado con SHA-256. El diseño
-prioriza la \textbf{minimización de falsos positivos} como métrica de primera clase y la
-\textbf{degradación segura}: ante un fallo de red, nunca reporta un falso «todo bien».
+lenguaje), \emph{typosquatting}, metadatos sospechosos o \textbf{malicia confirmada}
+por inteligencia de amenazas comunitaria, \textbf{antes} de instalarlos. El
+\textbf{Hito 1} entrega el motor determinista (Capas 0--2); el \textbf{Hito 2} añade
+la \textbf{Capa 3 (\emph{threat-intel})}: consulta OSV.dev para detectar advisories
+\texttt{MAL-*} y, opcionalmente, coteja contra la watchlist depscope de alucinaciones.
+El diseño prioriza la \textbf{minimización de falsos positivos} como métrica de primera
+clase y la \textbf{degradación segura}: ante un fallo de red, nunca reporta un falso
+«todo bien». Cero dependencias de runtime (solo stdlib).
 
 \medskip
-\noindent\textbf{Resultados del Hito 1 (implementación final):} 619 pruebas en verde,
-cobertura global 95{,}3\,\% ($\geq 90\,\%$ requerido), cobertura en paquetes críticos
-99\,\% ($\geq 95\,\%$ requerido); \texttt{mypy --strict} limpio; 2 contratos de
-import-linter verificados; lint ruff sin errores. CI en GitHub Actions sobre Python
-3.11 y 3.12.
+\noindent\textbf{Resultados del Hito 1:} 619 pruebas en verde,
+cobertura global 95{,}3\,\% ($\geq 90\,\%$), cobertura críticos 99\,\% ($\geq 95\,\%$);
+\texttt{mypy --strict}; 2 contratos import-linter.
+
+\medskip
+\noindent\textbf{Resultados del Hito 2 (implementación final):} 1547 pruebas en verde,
+cobertura global 96{,}23\,\% ($\geq 90\,\%$ requerido), cobertura en paquetes críticos
+99\,\% ($\geq 95\,\%$ requerido, incluye \texttt{core/threatintel}); \texttt{mypy --strict}
+limpio (82 archivos); 5 contratos de import-linter verificados; lint ruff (bandit S) sin
+errores. Capa 3 verificada en vivo: \texttt{bioql} $\Rightarrow$ \texttt{MAL-2025-47868}
+$\Rightarrow$ block. CI en GitHub Actions sobre Python 3.11 y 3.12.
 \end{abstract}
 
 \tableofcontents
@@ -104,10 +110,10 @@ SlopGuard cubre ese hueco con un análisis multicapa, determinista y explicable.
 \end{itemize}
 
 % ===========================================================================
-\section{Alcance del Hito 1}
+\section{Alcance (Hitos 1 y 2)}
 
-El producto completo tiene cinco capas (0--4) y varios \emph{frontends}. El Hito 1
-construye la arquitectura extensible y las tres capas \textbf{deterministas}:
+El producto completo tiene cinco capas (0--4) y varios \emph{frontends}. Los Hitos 1 y 2
+construyen la arquitectura extensible y las cuatro capas implementadas:
 
 \begin{itemize}[nosep]
   \item \textbf{Capa 0} --- existencia y edad del paquete vía PyPI JSON API.
@@ -115,12 +121,14 @@ construye la arquitectura extensible y las tres capas \textbf{deterministas}:
   (Damerau--Levenshtein + Jaro--Winkler) contra el top-N de PyPI, sin red y determinista.
   \item \textbf{Capa 2} --- señales de metadatos (número de \emph{releases}, repositorio
   enlazado, completitud), con aporte acotado al \emph{score}.
+  \item \textbf{Capa 3} --- \emph{threat-intel}: advisories \texttt{MAL-*} de OSV.dev
+  (malicia confirmada) + watchlist depscope de alucinaciones conocidas (opcional).
 \end{itemize}
 
-\paragraph{Fuera de alcance (Hito 1).} Análisis dinámico o ejecución del código de los
-paquetes; Capa 3 (\emph{threat-intel}); Capa 4 (LLM); \emph{frontends} pre-commit y
-GitHub Action; soporte multi-ecosistema simultáneo (npm es post-MVP vía adaptador);
-embeddings o modelos ML.
+\paragraph{Fuera de alcance (Hitos 1--2).} Análisis dinámico o ejecución del código de los
+paquetes; Capa 4 (superficie de alucinación con LLM, cacheada); \emph{frontends} pre-commit
+y GitHub Action como producto; soporte multi-ecosistema simultáneo (npm es post-MVP vía
+adaptador); embeddings o modelos ML; escaneo de vulnerabilidades generales (CVE/GHSA).
 
 % ===========================================================================
 \section{Arquitectura}
@@ -151,37 +159,60 @@ Normalización & \texttt{core/normalize.py} & PEP 503, saneo, acotado de longitu
 Parsers & \texttt{core/manifests/*} & requirements / pyproject / freeze; dedup; includes \\
 Adaptador (interfaz) & \texttt{core/adapters/base.py} & \texttt{EcosystemAdapter}, modelos normalizados \\
 Adaptador PyPI & \texttt{core/adapters/pypi.py} & \texttt{fetch()} seguro; PyPI JSON $\rightarrow$ normalizado \\
-HTTP seguro & \texttt{core/net/http_client.py} & TLS + allowlist + redirect + streaming \\
+HTTP seguro & \texttt{core/net/http_client.py} & TLS + allowlist (base + extra por instancia) + POST/GET \\
 JSON seguro & \texttt{core/net/safe_json.py} & \texttt{safe_json_loads(max_depth)} \\
-Caché en disco & \texttt{core/cache/disk_cache.py} & JSON-only, atómica, perms, TTL \\
-Capa 0 & \texttt{core/layers/layer0_existence.py} & existencia + edad \\
-Capa 1 & \texttt{core/layers/layer1_similarity.py} & \emph{typosquatting} DL+JW vs top-N \\
-Capa 2 & \texttt{core/layers/layer2_metadata.py} & metadatos (aporte acotado) \\
+Caché en disco & \texttt{core/cache/disk_cache.py} & JSON-only, atómica, perms, TTL; \texttt{get\_blob}/\texttt{put\_blob} \\
+Capa 0 & \texttt{core/layers/layer0\_existence.py} & existencia + edad \\
+Capa 1 & \texttt{core/layers/layer1\_similarity.py} & \emph{typosquatting} DL+JW vs top-N \\
+Capa 2 & \texttt{core/layers/layer2\_metadata.py} & metadatos (aporte acotado) \\
+\textbf{Capa 3} & \texttt{core/layers/layer3\_threatintel.py} & \texttt{ThreatIntelResult} $\rightarrow$ señales L3 (pura, sin red) \\
 Dataset & \texttt{core/dataset/top_n.py} & carga + verificación de \emph{checksum} \\
 Scoring & \texttt{core/scoring/scorer.py} & combina señales $\rightarrow$ 0--100 \\
-Veredicto/exit & \texttt{core/scoring/verdict.py} & umbrales, override, agregación \emph{exit} \\
-Config & \texttt{core/config.py} & TOML + precedencia + validación de rangos \\
-Orquestador & \texttt{core/engine.py} & manifiesto $\rightarrow \dots \rightarrow$ \texttt{ScanReport} \\
-CLI & \texttt{cli/*} & argparse, render humano/JSON, mapeo exit \\
+Veredicto/exit & \texttt{core/scoring/verdict.py} & umbrales, override MALICIOUS/NONEXISTENT, agregación \\
+Config & \texttt{core/config.py} & TOML + precedencia + validación (14 nuevos defaults L3) \\
+\textbf{TI fuente (interfaz)} & \texttt{core/threatintel/source.py} & \texttt{ThreatIntelSource} Protocol + \texttt{ThreatIntelResult} \\
+\textbf{TI OSV} & \texttt{core/threatintel/osv.py} & \texttt{POST /v1/querybatch}; filtra \texttt{MAL-*}; caché \\
+\textbf{TI watchlist} & \texttt{core/threatintel/watchlist.py} & corpus depscope; match exacto; caché \\
+\textbf{TI composite} & \texttt{core/threatintel/composite.py} & fusiona OSV + watchlist por nombre \\
+\textbf{TI resolver} & \texttt{core/threatintel/resolver.py} & chunking, dedup global, degradación de lote \\
+\textbf{TI registry} & \texttt{core/threatintel/registry.py} & factory \texttt{get\_threatintel\_source(config)} \\
+Orquestador & \texttt{core/engine.py} & manifiesto $\rightarrow$ Capa 0 concurrente $\rightarrow$ lote TI $\rightarrow$ L1/2/3 \\
+CLI & \texttt{cli/*} & argparse (\texttt{--no-layer3}/\texttt{--enable-watchlist}), render 1.1 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \subsection{Contratos de arquitectura (verificados por \texttt{import-linter})}
 
-Dos contratos declarados en \texttt{pyproject.toml} hacen fallar el build si se
+Cinco contratos declarados en \texttt{pyproject.toml} hacen fallar el build si se
 cruza una frontera:
 \begin{itemize}[nosep]
   \item \texttt{core.*} \;$\not\rightarrow$\; \texttt{cli.*} (el core no depende
-  de la CLI — R10.3).
+  de la CLI --- R10.3).
   \item \texttt{core.layers.*}, \texttt{core.scoring.*} \;$\not\rightarrow$\;
   \texttt{core.adapters.pypi}, \texttt{core.net.*} (las capas solo dependen de
-  \texttt{adapters.base} — R10.1).
+  \texttt{adapters.base} --- R10.1; Hito 1).
+  \item \texttt{core.layers.*}, \texttt{core.scoring.*} \;$\not\rightarrow$\;
+  \texttt{core.threatintel}, \texttt{core.net.*} (extensión Hito 2: las capas/scoring
+  no importan implementaciones de threat-intel ni red directamente --- R8.1/R8.3).
+  \item \texttt{core.threatintel.source} \;$\not\rightarrow$\; \texttt{core.net.*}
+  (la interfaz/Protocol no conoce el transporte concreto --- R8.1).
+  \item \texttt{core.layers.layer3\_threatintel} \;$\not\rightarrow$\;
+  \texttt{core.threatintel.osv}, \texttt{core.threatintel.watchlist},
+  \texttt{core.threatintel.composite}, \texttt{core.threatintel.resolver}
+  (Capa 3 pura: solo consume \texttt{ThreatIntelResult} ya construido e inyectado
+  por el engine --- R8.3).
 \end{itemize}
 Una regla de \emph{lint} (ruff/bandit) prohíbe \texttt{eval}/\texttt{exec}/
-\texttt{pickle}/\texttt{marshal} sobre datos externos (NFR-Seg.2). Un test AST
-independiente verifica además que el core no use \texttt{importlib} ni
-\texttt{__import__} sobre nombres provenientes del manifiesto (NFR-Seg.1).
+\texttt{pickle}/\texttt{marshal} sobre datos externos (NFR-Seg.2). Tests AST
+verifican que el core no use \texttt{importlib} ni \texttt{__import__} sobre
+nombres del manifiesto o de advisories OSV (NFR-Seg.1/Seg.3). El guardia estático
+del allowlist de red verifica que \texttt{ALLOWED\_HOSTS} base $=\{$\texttt{pypi.org}$\}$
+y que el conjunto efectivo por instancia $\subseteq \{$\texttt{api.osv.dev},
+\texttt{depscope.dev}$\}$ (con \texttt{depscope.dev} solo si \texttt{enable\_watchlist}).
+El modelo \texttt{Advisory} vive en \texttt{core.models} (módulo hoja) para que
+\texttt{core.scoring.verdict} pueda importarlo sin cruzar la frontera con
+\texttt{core.threatintel}.
 
 % ===========================================================================
 \section{Modelo de resultado}
@@ -269,14 +300,73 @@ distancias (anti-DoS cuadrático). El candidato objetivo se elige por menor DL $
 mayor JW $\to$ nombre ascendente (desempate determinista).
 
 \paragraph{Capa 2 --- metadatos.} Solo fuentes de la PyPI JSON API normalizada. Se emite
-\texttt{WEAK_METADATA} (+7) si el paquete tiene $\le$ \texttt{releases_min}
-\emph{releases} \textbf{y} le faltan $\ge$ \texttt{metadata_faltantes_min} campos
+\texttt{WEAK\_METADATA} (+7) si el paquete tiene $\le$ \texttt{releases\_min}
+\emph{releases} \textbf{y} le faltan $\ge$ \texttt{metadata\_faltantes\_min} campos
 del conjunto cerrado \{descripción, autor, licencia, clasificadores\}; y
-\texttt{LOW_VERIFIABILITY} (+5) si no enlaza repositorio. El aporte total de la
-Capa 2 está \textbf{acotado} a \texttt{c2_max_contrib} puntos (cap duro). Cuando
-un paquete tiene $\ge$ \texttt{releases_populares} releases, repo enlazado y
+\texttt{LOW\_VERIFIABILITY} (+5) si no enlaza repositorio. El aporte total de la
+Capa 2 está \textbf{acotado} a \texttt{c2\_max\_contrib} puntos (cap duro). Cuando
+un paquete tiene $\ge$ \texttt{releases\_populares} releases, repo enlazado y
 metadatos completos, el cap se aplica igualmente, evitando falsos positivos por
 popularidad baja relativa.
+
+\paragraph{Capa 3 --- \emph{threat-intel} (Hito 2).}
+La Capa 3 añade inteligencia de amenazas \emph{online} sobre las dependencias que
+\emph{existen} en PyPI (estado \texttt{FOUND} de Capa 0). El engine introduce una
+\textbf{barrera de lote} entre Capa 0 (concurrente por dependencia) y el bucle de
+evaluación por dependencia: recolecta los nombres \texttt{FOUND}, los resuelve contra
+la fuente de \emph{threat-intel} en lotes ($\le$ \texttt{osv\_batch\_max}), y luego
+cada dependencia recibe su \texttt{ThreatIntelResult} ya construido.
+
+\medskip
+\noindent\textbf{Arquitectura \texttt{ThreatIntelSource}.} La interfaz \texttt{ThreatIntelSource}
+(Protocol) es análoga a \texttt{EcosystemAdapter}: encapsula red, caché y parseo y
+devuelve un modelo normalizado (\texttt{ThreatIntelResult}) por nombre. El motor de
+capas/scoring \textbf{nunca} importa implementaciones de threat-intel (contratos
+import-linter \S3 y \S5 de §3.3). \texttt{CompositeSource} hace fan-out a
+\texttt{OsvSource} (siempre activa) y \texttt{WatchlistSource} (solo si
+\texttt{enable\_watchlist}). Añadir una nueva fuente equivale a implementar el
+Protocol sin tocar capas ni scoring.
+
+\medskip
+\noindent\textbf{Override \texttt{MALICIOUS} (ADR-06).} Un advisory \texttt{OSV} con
+prefijo \texttt{MAL-} produce señal dura \texttt{MALICIOUS} (\texttt{is\_soft=False},
+\texttt{weight=0}): \texttt{build\_dependency\_result} la detecta en la segunda rama
+de precedencia, \textbf{antes} que \texttt{NONEXISTENT} y del scorer, y fija
+\texttt{verdict=block}, \texttt{score=null}, poblando \texttt{advisories[]} con cada
+ID validado. Las vulnerabilidades generales (\texttt{GHSA-*}, \texttt{CVE-*},
+\texttt{PYSEC-*}) se ignoran. Verificado en vivo: \texttt{bioql} $\Rightarrow$
+\texttt{MAL-2025-47868} $\Rightarrow$ \texttt{block}.
+
+\medskip
+\noindent\textbf{Señal \texttt{KNOWN\_HALLUCINATION} (ADR-07).} Match exacto en el corpus
+depscope produce señal dura \texttt{KNOWN\_HALLUCINATION} con \texttt{weight=85}
+($\ge$ \texttt{umbral\_block}=80): bloquea por \emph{score}, no por override, de modo
+que el operador puede calibrar el umbral. La invariante anti-FP del Hito 1 (señales blandas
+$\le 25 < \texttt{umbral\_warn}$) permanece intacta literalmente.
+
+\medskip
+\noindent\textbf{Degradación segura y precedencia de veredicto.}
+Nuevo orden de 5 ramas en \texttt{build\_dependency\_result}:
+\begin{enumerate}[nosep]
+  \item \texttt{ctx.is\_unverifiable} (Capa 0) $\Rightarrow$ \texttt{status=unverifiable}.
+  \item \texttt{MALICIOUS} $\Rightarrow$ \texttt{block}, \texttt{score=null}, \texttt{advisories[]}.
+  \item \texttt{NONEXISTENT} $\Rightarrow$ \texttt{block}, \texttt{score=null}.
+  \item Score normal (typosquat / \texttt{KNOWN\_HALLUCINATION}-85 / blandas) $\Rightarrow$ veredicto por umbral.
+  \item \texttt{THREATINTEL\_UNVERIFIABLE} sin block/warn $\Rightarrow$ \texttt{unverifiable} o \texttt{warn}
+        según \texttt{threatintel\_degraded\_status} (default \texttt{unverifiable}).
+\end{enumerate}
+Si OSV no responde, la dependencia pasa a \texttt{unverifiable} (exit 3), nunca a
+\texttt{allow}. Un \texttt{block} de capas 0--2 domina sobre cualquier fallo de
+threat-intel. \texttt{ctx.is\_unverifiable} queda ligado \textbf{exclusivamente} a Capa 0.
+
+\medskip
+\noindent\textbf{Privacidad y seguridad de la Capa 3.}
+Solo se envía nombre normalizado (PEP 503) y ecosistema (\texttt{PyPI}) a
+\texttt{api.osv.dev}; el allowlist de red se amplía por instancia (nunca la constante global).
+El redirect handler valida contra el conjunto efectivo (fix SSRF). IDs de advisory validados
+con \texttt{\^{}MAL-[0-9A-Za-z-]+\$}; URL reconstruida, nunca reflejada del payload. El
+corpus depscope se valida por charset y cap al recibir \textbf{y} al leer caché
+(anti-envenenamiento). \texttt{UNVERIFIABLE} nunca se persiste en caché.
 
 % ===========================================================================
 \section{Función de \emph{scoring} (ADR-01)}
@@ -293,15 +383,18 @@ emite NAME\_UNTRUSTED sin ejecutar los algoritmos de distancia.
 \toprule
 \textbf{Clase} & \textbf{Señal / condición} & \textbf{Peso} \\
 \midrule
-Dura & TYPOSQUAT (DL $=1$, mejor candidato top-N) & 60 \\
-Dura & TYPOSQUAT (DL $=2$) & 40 \\
-Dura & TYPOSQUAT (DL $>$ dl\_max \textbf{y} JW $\ge 0.95$) & 30 \\
-Dura & TYPOSQUAT (DL $>$ dl\_max \textbf{y} $0.92 \le$ JW $< 0.95$) & 25 \\
-Dura & NAME\_UNTRUSTED ($\mathtt{len} >$ \texttt{nombre_max_chars}) & 30 \\
-Blanda & NEW\_PACKAGE (primera release $<$ \texttt{edad_minima_dias} días) & $+15$ \\
-Blanda & WEAK\_METADATA (releases escasas y campos ausentes) & $+7$ \\
-Blanda & LOW\_VERIFIABILITY (sin repositorio enlazado) & $+5$ \\
-Blanda & \textit{Capa 2 total} (cap duro: min(WEAK+LOW, \texttt{c2_max_contrib})) & $\le 10$ \\
+Dura L3 & MALICIOUS (advisory \texttt{MAL-*} en OSV --- override, no scorer) & override \\
+Dura L3 & KNOWN\_HALLUCINATION (match exacto corpus depscope, opcional) & 85 \\
+Dura L1 & TYPOSQUAT (DL $=1$, mejor candidato top-N) & 60 \\
+Dura L1 & TYPOSQUAT (DL $=2$) & 40 \\
+Dura L1 & TYPOSQUAT (DL $>$ dl\_max \textbf{y} JW $\ge 0.95$) & 30 \\
+Dura L1 & TYPOSQUAT (DL $>$ dl\_max \textbf{y} $0.92 \le$ JW $< 0.95$) & 25 \\
+Dura L1 & NAME\_UNTRUSTED ($\mathtt{len} >$ \texttt{nombre_max_chars}) & 30 \\
+Blanda L0 & NEW\_PACKAGE (primera release $<$ \texttt{edad_minima_dias} días) & $+15$ \\
+Blanda L2 & WEAK\_METADATA (releases escasas y campos ausentes) & $+7$ \\
+Blanda L2 & LOW\_VERIFIABILITY (sin repositorio enlazado) & $+5$ \\
+Blanda L2 & \textit{Capa 2 total} (cap duro: min(WEAK+LOW, \texttt{c2_max_contrib})) & $\le 10$ \\
+Blanda L3 & THREATINTEL\_UNVERIFIABLE (OSV/depscope no disponible, peso 0) & 0 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -345,12 +438,14 @@ tests AST) o por tests de comportamiento con servidor local malicioso (T15):
   metadatos. Sin \texttt{eval}/\texttt{exec}/\texttt{pickle}/\texttt{marshal}
   sobre datos externos (ruff/bandit, NFR-Seg.2). Sin \texttt{importlib} ni
   \texttt{__import__} sobre nombres del manifiesto (test AST, NFR-Seg.1).
-  \item \textbf{HTTP endurecido (ADR-03)}: solo HTTPS con verificación de certificado activa
-  (no desactivable), \emph{allowlist} de host restringida a \texttt{pypi.org}, sin
-  redirecciones cross-scheme/cross-host, lectura \emph{streaming} acotada por
-  \texttt{max_response_bytes}, mitigación de bombas de descompresión (descompresión
-  incremental con cota), \texttt{safe_json_loads} con \texttt{max_json_depth} (anti
-  JSON-bomb). Anomalías $\Rightarrow$ \texttt{NetworkUnverifiableError} $\Rightarrow$
+  \item \textbf{HTTP endurecido (ADR-03 + Hito 2)}: solo HTTPS con verificación de certificado
+  activa (no desactivable), \emph{allowlist} de host base \texttt{\{pypi.org\}} ampliada por
+  instancia con \texttt{extra\_allowed\_hosts} (\texttt{api.osv.dev} siempre si L3 activa;
+  \texttt{depscope.dev} solo si watchlist). El redirect handler valida contra el conjunto
+  efectivo de la instancia (fix SSRF: previene redirecciones cross-host desde
+  \texttt{api.osv.dev}). Lectura \emph{streaming} acotada por \texttt{max\_response\_bytes},
+  mitigación de bombas de descompresión, \texttt{safe\_json\_loads} (\texttt{max\_json\_depth}).
+  Anomalías $\Rightarrow$ \texttt{NetworkUnverifiableError} $\Rightarrow$
   \texttt{unverifiable} (nunca \texttt{allow}).
   \item \textbf{Caché segura (ADR-05)}: JSON exclusivamente (nunca \emph{pickle}), escritura
   atómica (\texttt{tempfile} + \texttt{os.replace}), permisos 0700/0600, claves
@@ -365,20 +460,32 @@ tests AST) o por tests de comportamiento con servidor local malicioso (T15):
   (ANSI CSI/SGR, controles C0/C1, CR/LF) en salida humana, logs y JSON. Sin rutas absolutas
   del sistema ni contenido del manifiesto en mensajes de error de CI.
   \item \textbf{Privacidad y costo cero}: nunca se envía el manifiesto a terceros; las
-  capas 0--2 consultan PyPI \emph{solo por nombre de paquete}; sin LLM ni servicios de
-  pago; cero dependencias de runtime.
+  capas 0--2 consultan PyPI \emph{solo por nombre de paquete}; la Capa 3 envía solo
+  nombre normalizado + ecosistema a \texttt{api.osv.dev} (y opcionalmente
+  \texttt{depscope.dev}); desactivable con \texttt{--no-layer3}; sin LLM ni servicios
+  de pago; cero dependencias de runtime.
+  \item \textbf{Anti-envenenamiento de feed (Hito 2)}: IDs de advisory OSV validados con
+  \texttt{\^{}MAL-[0-9A-Za-z-]+\$} antes de construir URLs; corpus depscope validado por
+  charset \texttt{\^{}[a-z0-9-]+\$} y cap de tamaño al parsear \textbf{y} al leer caché;
+  corpus inflado $\Rightarrow$ miss (refetch), no truncamiento silencioso.
 \end{itemize}
 
 % ===========================================================================
 \section{Manual de uso (CLI)}
 
-\begin{lstlisting}[language=bash]
-# Escanear un manifiesto
+\begin{lstlisting}[language=]
+# Escanear un manifiesto (Capa 3 activa por defecto)
 slopguard scan requirements.txt
 slopguard scan pyproject.toml --strict
 pip freeze | slopguard scan -            # lee de stdin (formato freeze)
 
-# Salida apta para CI (JSON estable, versionado)
+# Solo capas deterministas (sin red a OSV ni depscope)
+slopguard scan requirements.txt --no-layer3
+
+# Activar watchlist de alucinaciones depscope (opt-in)
+slopguard scan requirements.txt --enable-watchlist
+
+# Salida apta para CI (JSON 1.1, versionado)
 slopguard scan requirements.txt --format json
 
 # Forzar tipo de manifiesto; ajustar umbrales; deshabilitar cache
@@ -388,6 +495,7 @@ slopguard scan deps.txt --manifest-type requirements --umbral-block 75 --no-cach
 \noindent\textbf{Flags principales:} \texttt{--format \{human,json\}},
 \texttt{--no-cache}, \texttt{--strict}, \texttt{--config <ruta>},
 \texttt{--ecosystem pypi}, \texttt{--manifest-type \{requirements,pyproject,freeze\}},
+\texttt{--no-layer3} (desactiva Capa 3), \texttt{--enable-watchlist} (activa depscope),
 y \emph{overrides} de umbrales/red. Precedencia: CLI $>$ archivo de config $>$
 \emph{defaults}.
 
@@ -501,7 +609,33 @@ repos:
 % ===========================================================================
 \section{Resultados y garantías de calidad}
 
-\subsection{Resultados del Hito 1}
+\subsection{Resultados del Hito 2 (v0.2.0 --- implementación final)}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Métrica} & \textbf{Valor} & \textbf{Umbral requerido} \\
+\midrule
+Pruebas totales & 1547 & todas en verde \\
+Cobertura global (líneas + ramas) & 96{,}23\,\% & $\geq 90\,\%$ \\
+Cobertura paquetes críticos & 99\,\% & $\geq 95\,\%$ \\
+\texttt{mypy --strict} & sin errores (82 archivos) & sin errores \\
+\texttt{ruff check} (bandit S) & sin errores & sin errores \\
+\texttt{lint-imports} (5 contratos) & OK & OK \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Los paquetes críticos verificados al $\ge 95\,\%$ son:
+\texttt{core/net}, \texttt{core/cache}, \texttt{core/scoring},
+\texttt{core/layers}, \texttt{core/dataset}, \texttt{core/threatintel}.
+
+Verificación en vivo de la Capa 3: \texttt{bioql} $\Rightarrow$
+\texttt{MAL-2025-47868} $\Rightarrow$ \texttt{block} (OSV.dev, confirmado
+durante el desarrollo).
+
+\subsection{Resultados del Hito 1 (v0.1.0 --- referencia)}
 
 \begin{center}
 \small
@@ -519,7 +653,7 @@ Cobertura paquetes críticos & 99\,\% & $\geq 95\,\%$ \\
 \end{tabular}
 \end{center}
 
-Los paquetes críticos verificados al $\ge 95\,\%$ son:
+Los paquetes críticos verificados al $\ge 95\,\%$ en el Hito 1 son:
 \texttt{core/net}, \texttt{core/cache}, \texttt{core/scoring},
 \texttt{core/layers}, \texttt{core/dataset}.
 

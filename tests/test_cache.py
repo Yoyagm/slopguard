@@ -486,8 +486,11 @@ def _patch_http_handler(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _with_http(
         https_handler: urllib.request.HTTPSHandler,
+        allowed_hosts: frozenset[str] = hc.ALLOWED_HOSTS,
     ) -> tuple[urllib.request.BaseHandler, ...]:
-        return (urllib.request.HTTPHandler(), *original(https_handler))
+        # Propaga la allowlist EFECTIVA por-instancia (Hito 2) al `_safe_handlers` real,
+        # de modo que el redirect handler endurecido la reciba como en produccion.
+        return (urllib.request.HTTPHandler(), *original(https_handler, allowed_hosts))
 
     monkeypatch.setattr(SecureHttpClient, "_safe_handlers", staticmethod(_with_http))
 
@@ -508,6 +511,9 @@ def malicious_server(
     thread.start()
     monkeypatch.setattr(hc, "_ALLOWED_SCHEME", "http")
     monkeypatch.setattr(hc, "ALLOWED_HOSTS", frozenset({"127.0.0.1"}))
+    # El loopback usa puerto efimero: neutraliza el rechazo de puerto explicito (A10
+    # SSRF, defecto-deniega en produccion) SOLO en este fixture, igual que la allowlist.
+    monkeypatch.setattr(hc, "_reject_port_and_userinfo", lambda _parts: None)
     _patch_http_handler(monkeypatch)
     try:
         yield f"http://127.0.0.1:{port}"

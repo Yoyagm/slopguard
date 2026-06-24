@@ -1,10 +1,12 @@
 """Render JSON versionado y estable del ScanReport (R6.3, R6.5, §2.5).
 
 Produce un JSON con:
-  - schema_version="1.0", tool_version, ecosystem, summary, error_category, results.
+  - schema_version="1.1", tool_version, ecosystem, summary, error_category, results.
   - Sin timestamps de reloj (determinismo R6.3).
   - Claves fijas en orden determinista (sort_keys=False; el orden es el del dict literal).
   - Strings externos saneados con sanitize_for_output (R6.5).
+  - Clave estable `advisories` en cada result (§2.4, H2-T14): lista [] si sin malicia,
+    lista de objetos {id, kind, url, source} saneados si MALICIOUS (schema 1.1).
 
 El JSON siempre va a stdout (§3.5). Llamar `render_json(report)` retorna la
 cadena serializada; `render_json_to(report, out)` la escribe al stream.
@@ -16,8 +18,22 @@ import json
 import sys
 from typing import Any, TextIO
 
-from slopguard.core import DependencyResult, LayerSignal, ScanReport
+from slopguard.core import Advisory, DependencyResult, LayerSignal, ScanReport
 from slopguard.core.normalize import sanitize_for_output
+
+
+def _advisory_to_dict(advisory: Advisory) -> dict[str, object]:
+    """Serializa un Advisory con claves fijas en orden determinista (§2.4, H2-T14).
+
+    Todos los strings se sanean: el id y la url se construyen en la fuente pero se
+    sanean de nuevo aqui como defensa en profundidad (R7.4, saneo en la salida).
+    """
+    return {
+        "id": sanitize_for_output(advisory.id),
+        "kind": sanitize_for_output(advisory.kind),
+        "url": sanitize_for_output(advisory.url),
+        "source": sanitize_for_output(advisory.source),
+    }
 
 
 def _signal_to_dict(signal: LayerSignal) -> dict[str, object]:
@@ -57,6 +73,8 @@ def _result_to_dict(result: DependencyResult) -> dict[str, object]:
             result.error_category.value if result.error_category is not None else None
         ),
         "signals": [_signal_to_dict(s) for s in result.signals],
+        # Clave estable (§2.4, schema 1.1): siempre presente, [] si sin malicia.
+        "advisories": [_advisory_to_dict(a) for a in result.advisories],
     }
 
 

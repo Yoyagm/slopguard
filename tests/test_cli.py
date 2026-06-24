@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import slopguard
 from slopguard.cli.exit_codes import EXIT_ALLOW, EXIT_BLOCK, EXIT_OPERATIONAL, EXIT_WARN
 from slopguard.cli.main import main
 from slopguard.cli.render_json import render_json
@@ -185,7 +186,8 @@ def test_version_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:
     code = main(["version"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "slopguard 0.1.0" in out
+    # Dinámico vs __version__ para no romper en futuros bumps de versión.
+    assert f"slopguard {slopguard.__version__}" in out
 
 
 def test_sin_subcomando_retorna_0(capsys: pytest.CaptureFixture[str]) -> None:
@@ -771,11 +773,11 @@ def test_render_json_claves_segun_esquema() -> None:
     ]
     assert list(data.keys()) == expected_top
 
-    # Claves de un resultado
+    # Claves de un resultado (schema 1.1: se anio advisories al final de forma aditiva, §2.4)
     result = data["results"][0]
     expected_result = [
         "name", "version_pin", "status", "verdict", "score",
-        "suspected_target", "error_category", "signals",
+        "suspected_target", "error_category", "signals", "advisories",
     ]
     assert list(result.keys()) == expected_result
 

@@ -773,17 +773,20 @@ def test_render_json_claves_segun_esquema() -> None:
     ]
     assert list(data.keys()) == expected_top
 
-    # Claves de un resultado (schema 1.1: se anio advisories al final de forma aditiva, §2.4)
+    # Claves de un resultado (schema 1.2: llm_assessment aditivo al final, H3-T18)
     result = data["results"][0]
     expected_result = [
         "name", "version_pin", "status", "verdict", "score",
         "suspected_target", "error_category", "signals", "advisories",
+        "llm_assessment",
     ]
     assert list(result.keys()) == expected_result
 
-    # Claves de una senal
+    # Claves de una senal (is_llm_channel aditivo, H3-T18)
     sig = result["signals"][0]
-    expected_signal = ["layer", "code", "weight", "is_soft", "detail", "suspected_target"]
+    expected_signal = [
+        "layer", "code", "weight", "is_soft", "is_llm_channel", "detail", "suspected_target",
+    ]
     assert list(sig.keys()) == expected_signal
 
 

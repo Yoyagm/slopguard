@@ -1,12 +1,17 @@
 """Render JSON versionado y estable del ScanReport (R6.3, R6.5, §2.5).
 
 Produce un JSON con:
-  - schema_version="1.1", tool_version, ecosystem, summary, error_category, results.
+  - schema_version (gestionado por engine), tool_version, ecosystem, summary,
+    error_category, results.
   - Sin timestamps de reloj (determinismo R6.3).
   - Claves fijas en orden determinista (sort_keys=False; el orden es el del dict literal).
   - Strings externos saneados con sanitize_for_output (R6.5).
   - Clave estable `advisories` en cada result (§2.4, H2-T14): lista [] si sin malicia,
     lista de objetos {id, kind, url, source} saneados si MALICIOUS (schema 1.1).
+  - Clave estable `llm_assessment` en cada result (H3-T18): null si no hay evaluacion
+    LLM; dict {clasificacion, confianza, patron, rationale, modelo, prompt_version}
+    saneado si presente (schema 1.2).
+  - Campo `llm_unavailable` en summary (H3-T18): deps en banda gris sin evaluacion LLM.
 
 El JSON siempre va a stdout (§3.5). Llamar `render_json(report)` retorna la
 cadena serializada; `render_json_to(report, out)` la escribe al stream.
@@ -19,6 +24,7 @@ import sys
 from typing import Any, TextIO
 
 from slopguard.core import Advisory, DependencyResult, LayerSignal, ScanReport
+from slopguard.core.models import LlmAssessment
 from slopguard.core.normalize import sanitize_for_output
 
 
@@ -36,6 +42,24 @@ def _advisory_to_dict(advisory: Advisory) -> dict[str, object]:
     }
 
 
+def _llm_assessment_to_dict(assessment: LlmAssessment) -> dict[str, object]:
+    """Serializa un LlmAssessment con claves fijas en orden determinista (H3-T18).
+
+    `clasificacion` es un StrEnum: se usa .value para que el JSON sea estable.
+    El resto de strings externos (patron, rationale, modelo, prompt_version) se
+    sanean como defensa en profundidad (R6.5/R7.4), aunque ya vienen truncados
+    del evaluador.
+    """
+    return {
+        "clasificacion": assessment.clasificacion.value,
+        "confianza": assessment.confianza,
+        "patron": sanitize_for_output(assessment.patron),
+        "rationale": sanitize_for_output(assessment.rationale),
+        "modelo": sanitize_for_output(assessment.modelo),
+        "prompt_version": sanitize_for_output(assessment.prompt_version),
+    }
+
+
 def _signal_to_dict(signal: LayerSignal) -> dict[str, object]:
     """Serializa una LayerSignal con claves fijas en orden determinista."""
     return {
@@ -43,6 +67,7 @@ def _signal_to_dict(signal: LayerSignal) -> dict[str, object]:
         "code": signal.code.value,
         "weight": signal.weight,
         "is_soft": signal.is_soft,
+        "is_llm_channel": signal.is_llm_channel,
         "detail": sanitize_for_output(signal.detail),
         "suspected_target": (
             sanitize_for_output(signal.suspected_target)
@@ -75,6 +100,12 @@ def _result_to_dict(result: DependencyResult) -> dict[str, object]:
         "signals": [_signal_to_dict(s) for s in result.signals],
         # Clave estable (§2.4, schema 1.1): siempre presente, [] si sin malicia.
         "advisories": [_advisory_to_dict(a) for a in result.advisories],
+        # Clave estable (H3-T18, schema 1.2): null si sin evaluacion LLM.
+        "llm_assessment": (
+            _llm_assessment_to_dict(result.llm_assessment)
+            if result.llm_assessment is not None
+            else None
+        ),
     }
 
 
@@ -91,6 +122,7 @@ def _report_to_dict(report: ScanReport) -> dict[str, Any]:
             "warn": summary.warn,
             "block": summary.block,
             "unverifiable": summary.unverifiable,
+            "llm_unavailable": summary.llm_unavailable,
             "exit_code": summary.exit_code,
         },
         "error_category": (

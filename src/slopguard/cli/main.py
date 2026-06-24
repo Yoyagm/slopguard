@@ -88,6 +88,7 @@ def _add_scan_flags(parser: argparse.ArgumentParser) -> None:
     )
     _add_override_flags(parser)
     _add_layer3_flags(parser)
+    _add_layer4_flags(parser)
 
 
 def _add_override_flags(parser: argparse.ArgumentParser) -> None:
@@ -121,6 +122,37 @@ def _add_layer3_flags(parser: argparse.ArgumentParser) -> None:
         help="Activa la watchlist de alucinaciones conocidas (depscope).",
     )
     _add_layer3_overrides(parser)
+
+
+def _add_layer4_flags(parser: argparse.ArgumentParser) -> None:
+    """Agrega los flags booleanos y de modelo de Capa 4 (H3-T17).
+
+    --enable-layer4 y --no-layer4 son mutuamente excluyentes: si se pasan los
+    dos, --no-layer4 tiene precedencia (documentado en el help). El modelo LLM
+    se inyecta como override string con None como centinela (no-op en load_config).
+    """
+    layer4_group = parser.add_mutually_exclusive_group()
+    layer4_group.add_argument(
+        "--enable-layer4",
+        action="store_true",
+        default=False,
+        dest="enable_layer4",
+        help="Activa la Capa 4 (evaluacion LLM de superficie de alucinacion).",
+    )
+    layer4_group.add_argument(
+        "--no-layer4",
+        action="store_true",
+        default=False,
+        dest="no_layer4",
+        help="Desactiva la Capa 4 (prevalece sobre --enable-layer4).",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        dest="llm_model",
+        metavar="ID",
+        help="Modelo LLM a usar en Capa 4 (anula el valor del archivo de config).",
+    )
 
 
 def _add_layer3_overrides(parser: argparse.ArgumentParser) -> None:
@@ -185,12 +217,20 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, object]:
         # Capa 3 (§3.7): overrides numericos y de host
         "osv_host", "osv_ttl_cache_horas", "osv_timeout_total_por_lote_s",
         "watchlist_host", "watchlist_ttl_cache_horas",
+        # Capa 4 (H3-T17): modelo LLM como override string
+        "llm_model",
     )
     overrides: dict[str, object] = {k: getattr(args, k, None) for k in keys}
     if getattr(args, "no_layer3", False):
         overrides["enable_layer3"] = False
     if getattr(args, "enable_watchlist", False):
         overrides["enable_watchlist"] = True
+    # Capa 4: --no-layer4 tiene precedencia sobre --enable-layer4 (mutuamente excluyentes
+    # via add_mutually_exclusive_group, pero se cablea explicitamente por claridad).
+    if getattr(args, "no_layer4", False):
+        overrides["enable_layer4"] = False
+    elif getattr(args, "enable_layer4", False):
+        overrides["enable_layer4"] = True
     return overrides
 
 

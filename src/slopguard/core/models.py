@@ -17,6 +17,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
+# ---------------------------------------------------------------------------
+# Topes estructurales de saturacion del scoring (ADR-01/ADR-11). Viven en esta
+# HOJA para que `core.scoring.scorer` (que los APLICA) y `core.config` (que valida
+# el invariante anti-block SOBRE ellos) compartan una UNICA fuente de verdad sin
+# que `config` dependa de `scoring`: `core.layers.layer4_hallucination` importa
+# `core.config`, y la frontera ADR-17 prohibe `core.layers ✗→ core.scoring`.
+# Mismo patron que MaliceState/ThreatIntelResult (design §1.4). NO son
+# configurables: hacerlos moviles seria un footgun que romperia el anti-block.
+SOFT_CAP = 25  # techo de las senales blandas heuristicas (ADR-01)
+LLM_SOFT_CAP = 50  # techo del canal LLM separado, Hito 3 (ADR-11)
+
 
 class Layer(IntEnum):
     """Capa de deteccion que origino una senal."""
@@ -25,6 +36,7 @@ class Layer(IntEnum):
     L1 = 1
     L2 = 2
     L3 = 3  # NUEVO: threat-intel (Hito 2)
+    L4 = 4  # NUEVO: superficie de alucinacion con LLM (Hito 3)
 
 
 class SignalCode(StrEnum):
@@ -40,6 +52,23 @@ class SignalCode(StrEnum):
     MALICIOUS = "malicious"  # L3, DURA, override de block (ADR-06, weight=0)
     KNOWN_HALLUCINATION = "known_hallucination"  # L3, DURA, weight=85 (ADR-07)
     THREATINTEL_UNVERIFIABLE = "threatintel_unverifiable"  # L3, BLANDA, weight=0
+    # --- L4: superficie de alucinacion con LLM (Hito 3, aditivos) ---
+    LLM_HALLUCINATION_SURFACE = "llm_hallucination_surface"  # L4, canal LLM (is_soft=True)
+    LLM_UNAVAILABLE = "llm_unavailable"  # L4, BLANDA informativa, weight=0
+
+
+class Clasificacion(StrEnum):
+    """Clasificacion del LLM sobre la superficie de alucinacion (Hito 3, L4).
+
+    Taxonomia de la investigacion de slopsquatting: `legitimo` (sin riesgo L4),
+    `conflacion` (mezcla de dos paquetes reales), `typo` (variante tipografica),
+    `fabricacion` (nombre confabulado puro).
+    """
+
+    LEGITIMO = "legitimo"
+    CONFLACION = "conflacion"
+    TYPO = "typo"
+    FABRICACION = "fabricacion"
 
 
 class Verdict(StrEnum):
@@ -86,6 +115,7 @@ class LayerSignal:
     is_soft: bool  # True=corroborante acotada; False=dura/override
     detail: str  # explicacion en espanol, SANEADA
     suspected_target: str | None = None  # paquete legitimo sospechado (typosquat)
+    is_llm_channel: bool = False  # NUEVO (Hito 3): canal de peso L4 separado (fuera de SOFT_CAP)
     advisories: tuple[Advisory, ...] = ()  # NUEVO (Hito 2): advisories MAL-* portados
     # por la senal MALICIOUS (L3). Default ()==retro-compatible: el resto de capas no
     # los lleva. `build_dependency_result` los traslada a DependencyResult.advisories.
@@ -143,6 +173,41 @@ class ThreatIntelResult:
 
 
 @dataclass(frozen=True, slots=True)
+class HallucinationContext:
+    """Contexto determinista que se envia al LLM (Hito 3, R8.2).
+
+    SOLO datos derivados de capas 0-2: existencia/edad, vecino typo y su distancia,
+    presencia de repo/metadata, y los codes de las senales blandas disparadas.
+    NUNCA el manifiesto, rutas locales ni identificadores del usuario.
+    """
+
+    existe: bool
+    edad_dias: int | None
+    typo_vecino: str | None  # paquete top-10k mas cercano (o None)
+    typo_distancia: float | None  # JW/DL al vecino (o None)
+    tiene_repo: bool
+    tiene_metadata: bool
+    senales_blandas: tuple[str, ...] = ()  # codes de blandas heuristicas disparadas
+
+
+@dataclass(frozen=True, slots=True)
+class LlmAssessment:
+    """Veredicto del LLM validado y SANEADO (Hito 3, L4). Nunca prosa cruda.
+
+    `confianza` es un float finito en [0, 1] (validado en cliente). `patron` y
+    `rationale` ya vienen saneados+truncados. `modelo` y `prompt_version` forman
+    parte de la identidad del veredicto (cache y reproducibilidad).
+    """
+
+    clasificacion: Clasificacion
+    confianza: float
+    patron: str
+    rationale: str
+    modelo: str
+    prompt_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class DependencyResult:
     """Resultado de evaluar una dependencia."""
 
@@ -155,6 +220,7 @@ class DependencyResult:
     suspected_target: str | None
     error_category: ErrorCategory | None
     advisories: tuple[Advisory, ...] = ()  # NUEVO (Hito 2, aditivo, default=()==retro-compatible)
+    llm_assessment: LlmAssessment | None = None  # NUEVO (Hito 3, aditivo, default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +233,7 @@ class ScanSummary:
     block: int
     unverifiable: int
     exit_code: int
+    llm_unavailable: int = 0  # NUEVO (Hito 3): deps en banda gris no evaluables por el LLM
 
 
 @dataclass(frozen=True, slots=True)

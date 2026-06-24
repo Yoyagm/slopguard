@@ -14,9 +14,9 @@
 > metadatos sospechosos o **malicia confirmada** por inteligencia de amenazas comunitaria,
 > **antes** de instalarlos.
 
-**Estado:** Hito 2 completado (v0.2.0). 1547 tests verdes, cobertura 96.23% global (≥90%),
-99% en paquetes críticos (≥95%, incluye `core/threatintel`). mypy strict (82 archivos),
-ruff (bandit S), import-linter (5 contratos), CI en GitHub Actions.
+**Estado:** Hito 3 completado (v0.3.0). 1631 tests verdes, gate de cobertura ≥90% global
+y ≥95% en paquetes críticos. mypy strict, ruff (bandit S), import-linter (7 contratos),
+CI en GitHub Actions.
 
 ---
 
@@ -36,9 +36,11 @@ código de los paquetes analizados:
 | **Capa 1** — *typosquatting* | Damerau-Levenshtein + Jaro-Winkler contra el top-N de PyPI, sin red, determinista | `TYPOSQUAT` (dura), `NAME_UNTRUSTED` (nombre excesivamente largo) |
 | **Capa 2** — metadatos | Señales de calidad del paquete solo desde PyPI JSON: releases, repositorio, campos de metadata | `WEAK_METADATA`, `LOW_VERIFIABILITY` (blandas, aporte acotado a 10 pts) |
 | **Capa 3** — *threat-intel* | Advisories `MAL-*` de OSV.dev (malicia confirmada) + watchlist de alucinaciones depscope (opcional) | `MALICIOUS` (override de block), `KNOWN_HALLUCINATION` (dura, peso 85), `THREATINTEL_UNVERIFIABLE` (blanda) |
+| **Capa 4** — *superficie de alucinación con LLM* (opt-in) | Clasifica nombres en banda gris (jóvenes/baja señal) con Claude contra la taxonomía conflación/typo/fabricación | `LLM_HALLUCINATION_SURFACE` (canal separado: a lo sumo `warn`, nunca `block`), `LLM_UNAVAILABLE` (informativa) |
 
-**Cero dependencias de runtime** (solo stdlib). Sin LLM ni servicios de pago. PyPI JSON
-API + OSV.dev (gratuitos, públicos) y un dataset embebido verificado con SHA-256.
+**Cero dependencias de runtime** (solo stdlib). PyPI JSON API + OSV.dev (gratuitos,
+públicos) y un dataset embebido verificado con SHA-256. La **Capa 4 (LLM)** es *opt-in*
+(requiere `ANTHROPIC_API_KEY`); desactivada por defecto, el resto opera sin LLM ni pagos.
 
 ---
 
@@ -353,6 +355,49 @@ El cambio es **retrocompatible**: un consumidor de schema 1.0 ignora `advisories
 seniales de `layer:3` sin romperse.
 
 ---
+
+## Capa 4 — Superficie de alucinación con LLM (Hito 3, opt-in)
+
+La Capa 4 usa un LLM (Claude `claude-opus-4-8`) como **corroborador opt-in** para los nombres
+en *banda gris*: paquetes que **existen** pero son **jóvenes o de baja señal** y **sin ninguna
+señal dura** (typosquats, maliciosos e inexistentes ya los resuelven las capas 0–3). El LLM
+clasifica el nombre contra la taxonomía de la investigación de slopsquatting —`legitimo`,
+`conflacion`, `typo`, `fabricacion`— a partir del **contexto determinista** ya computado (edad,
+metadata, señales blandas). Nunca se envía el manifiesto: solo `nombre + ecosistema + contexto`.
+
+**La señal de Capa 4 nunca bloquea.** Va en un canal de peso separado acotado a 50 puntos; con
+`SOFT_CAP=25` y `umbral_block=80`, el máximo alcanzable por una dep con señal LLM es
+`25 + 50 = 75 < 80`. A lo sumo eleva un paquete a `warn` (advisory "verificar antes de instalar"),
+nunca a `block` — garantizado por construcción (el *gating* excluye toda señal dura ⇒
+`max_hard=0`) y verificado por test de propiedad.
+
+Es **opt-in**: requiere `--enable-layer4` y la variable de entorno `ANTHROPIC_API_KEY`. Sin clave
+o sin la flag, SlopGuard se comporta exactamente como el Hito 2. Si el LLM no responde (timeout,
+*refusal*, error, tope de llamadas), la capa **se abstiene** (`LLM_UNAVAILABLE`): el veredicto
+determinista permanece intacto y se reporta el aviso, sin fingir "todo limpio".
+
+### Flags de la Capa 4
+
+```
+--enable-layer4          Activa la Capa 4 (requiere ANTHROPIC_API_KEY).
+--no-layer4              Fuerza la desactivación (default).
+--llm-model MODELO       Modelo a usar (default: claude-opus-4-8).
+```
+
+### Defaults de la Capa 4
+
+| Parámetro | Default | Descripción |
+|---|---|---|
+| `enable_layer4` | `false` | Activa/desactiva la Capa 4 (opt-in) |
+| `llm_model` | `claude-opus-4-8` | Modelo de Claude |
+| `gray_edad_max_dias` | `365` | Edad bajo la cual un paquete es "joven" (rama del gating) |
+| `llm_conf_min` | `0.5` | Confianza mínima para emitir señal de riesgo |
+| `llm_max_calls_por_corrida` | `50` | Tope de llamadas de red por corrida (aciertos de caché no cuentan) |
+| `llm_ttl_cache_horas` | `168` | TTL de la caché de veredictos LLM (sello `llm-1`) |
+
+> **Privacidad y costo.** Solo se envían `nombre + ecosistema + contexto determinista`, nunca el
+> manifiesto. La clave se lee solo del entorno y jamás aparece en logs, JSON, errores ni caché. El
+> costo se acota por *gating* (solo banda gris), caché persistente y el tope de llamadas.
 
 ## Exit codes (R7)
 

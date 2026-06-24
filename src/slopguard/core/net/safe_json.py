@@ -25,18 +25,34 @@ _QUOTE = 0x22  # '"'
 _BACKSLASH = 0x5C  # '\'
 
 
-def safe_json_loads(data: bytes, max_depth: int) -> object:
+def _reject_nonfinite(token: str) -> object:
+    """`parse_constant` para `json.loads`: rechaza NaN/Infinity/-Infinity (Hito 3).
+
+    JSON estandar no admite constantes no finitas, pero `json.loads` las acepta por
+    defecto (las mapea a `float('nan')`/`inf`). La salida estructurada del LLM es entrada
+    NO confiable: un `confianza: NaN` evadiria un chequeo de rango (`NaN<0` y `NaN>1` son
+    ambos False). Este hook las rechaza en el parseo, antes de cualquier validacion.
+    """
+    raise NetworkUnverifiableError(f"constante JSON no finita rechazada: {token}")
+
+
+def safe_json_loads(data: bytes, max_depth: int, *, reject_nonfinite: bool = False) -> object:
     """Parsea `data` (UTF-8) rechazando anidamiento > `max_depth` antes de materializar.
 
     Lanza `NetworkUnverifiableError` si la profundidad estructural excede la cota,
     si `max_depth` es invalido o si el contenido no es JSON valido. Nunca expone el
     payload completo ni un stacktrace crudo (NFR-Seg.3-4).
+
+    Con `reject_nonfinite=True` (Hito 3) rechaza ademas `NaN`/`Infinity`/`-Infinity`
+    (el default `parse_constant=None` los aceptaria). Lo usa el parseo de la salida
+    estructurada del LLM, entrada no confiable.
     """
     if max_depth < 1:
         raise NetworkUnverifiableError("max_depth de JSON debe ser >= 1")
     _reject_excessive_depth(data, max_depth)
+    parse_constant = _reject_nonfinite if reject_nonfinite else None
     try:
-        return json.loads(data)
+        return json.loads(data, parse_constant=parse_constant)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         raise NetworkUnverifiableError(f"respuesta JSON malformada: {type(exc).__name__}") from exc
 

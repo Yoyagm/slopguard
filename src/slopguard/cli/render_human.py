@@ -2,7 +2,8 @@
 
 Cada dependencia muestra: nombre / score-o-'unverifiable' / veredicto /
 explicacion de senales / suspected_target / advisories MAL-* (R7.1) /
-atribucion watchlist (R7.2) / accion sugerida. Al final un resumen.
+atribucion watchlist (R7.2) / evaluacion LLM si disponible (H3-T19) /
+accion sugerida. Al final un resumen.
 
 TODOS los strings externos se sanean con `sanitize_for_output` antes de
 escribir (R6.5/R7.4): neutraliza ANSI CSI/SGR, controles C0/C1 y CR/LF.
@@ -14,7 +15,7 @@ import sys
 from typing import TextIO
 
 from slopguard.core import DependencyResult, ScanReport, SignalCode, Verdict
-from slopguard.core.normalize import sanitize_for_output
+from slopguard.core.normalize import sanitize_and_truncate, sanitize_for_output
 
 # Ancho maximo de linea para el render TTY.
 _LINE_WIDTH = 78
@@ -92,7 +93,37 @@ def _render_watchlist_attribution(result: DependencyResult, out: TextIO) -> None
             return
 
 
-def _render_dep(result: DependencyResult, out: TextIO) -> None:
+def _render_llm_assessment(
+    result: DependencyResult, out: TextIO, *, max_patron: int, max_rationale: int
+) -> None:
+    """Escribe el bloque de evaluacion LLM si existe (H3-T19, R6.5/R7.4/R7.3).
+
+    Marcado explicitamente como advisory generado por LLM (no verificado).
+    `rationale` es texto del LLM (entrada no confiable): se sanea Y trunca con
+    `sanitize_and_truncate` (R7.3/ADR-19), defensa en profundidad que no asume que
+    una capa previa truncara (p.ej. un blob de cache reconstruido sin truncar).
+    `max_patron` se recibe por simetria con el render JSON y queda reservado: el
+    render humano NO muestra `patron` hoy (se truncaria igual si se mostrara).
+    `modelo`/`prompt_version` no son texto libre del LLM: solo se sanean.
+    """
+    assessment = result.llm_assessment
+    if assessment is None:
+        return
+    rationale = sanitize_and_truncate(assessment.rationale, max_rationale)
+    modelo = sanitize_for_output(assessment.modelo)
+    prompt_ver = sanitize_for_output(assessment.prompt_version)
+    out.write(
+        f"  [ADVISORY LLM — texto generado por LLM, NO verificado]"
+        f" clasificacion={assessment.clasificacion.value}"
+        f"  confianza={assessment.confianza:.2f}\n"
+    )
+    out.write(f"    Rationale: {rationale}\n")
+    out.write(f"    Transparencia: modelo={modelo}  prompt_version={prompt_ver}\n")
+
+
+def _render_dep(
+    result: DependencyResult, out: TextIO, *, max_patron: int, max_rationale: int
+) -> None:
     """Escribe una dependencia individual al stream de salida (R7.1/R7.2/R7.4)."""
     name = sanitize_for_output(result.name)
     version = f"=={sanitize_for_output(result.version_pin)}" if result.version_pin else ""
@@ -127,17 +158,28 @@ def _render_dep(result: DependencyResult, out: TextIO) -> None:
     # Atribucion watchlist si hay KNOWN_HALLUCINATION (R7.2).
     _render_watchlist_attribution(result, out)
 
+    # Evaluacion LLM si disponible (H3-T19): advisory no verificado.
+    _render_llm_assessment(result, out, max_patron=max_patron, max_rationale=max_rationale)
+
     # Accion generica: para MALICIOUS usa la especifica si ya se mostro en advisories.
     if not _has_malicious_signal(result):
         action = _ACTION.get(result.verdict, "Revisar manualmente.")
         out.write(f"  Accion: {action}\n")
 
 
-def render_human(report: ScanReport, *, out: TextIO | None = None) -> None:
+def render_human(
+    report: ScanReport,
+    *,
+    out: TextIO | None = None,
+    max_patron: int = 280,
+    max_rationale: int = 1000,
+) -> None:
     """Escribe el reporte en formato humano al stream dado (default stdout).
 
     Imprime: cabecera, cada dependencia, y resumen final con conteos (R6.1-6.2).
-    Todos los strings externos se sanean (R6.5).
+    Todos los strings externos se sanean (R6.5). `max_patron`/`max_rationale`
+    acotan el texto del LLM (R7.3); sus defaults coinciden con los de `Config`
+    para no romper call-sites que no pasen limites.
     """
     stream = out if out is not None else sys.stdout
     ecosystem = sanitize_for_output(report.ecosystem)
@@ -159,7 +201,7 @@ def render_human(report: ScanReport, *, out: TextIO | None = None) -> None:
         return
 
     for result in report.results:
-        _render_dep(result, stream)
+        _render_dep(result, stream, max_patron=max_patron, max_rationale=max_rationale)
 
     _write_summary(report, stream)
 
@@ -172,5 +214,13 @@ def _write_summary(report: ScanReport, out: TextIO) -> None:
         f"Resumen: {s.total} deps — "
         f"allow={s.allow}  warn={s.warn}  block={s.block}  unverifiable={s.unverifiable}\n"
     )
+    if s.llm_unavailable > 0:
+        # Aviso agregado visible (R4.6/R7.6): la Capa 4 estaba activa pero no pudo
+        # evaluar a algunas deps de banda gris; su veredicto determinista se mantiene
+        # (no se finge "todo limpio"). Linea ausente si llm_unavailable==0 (formato H1/H2).
+        out.write(
+            f"Aviso (Capa 4): {s.llm_unavailable} dependencia(s) en banda gris no se "
+            "pudieron evaluar por el LLM; su veredicto determinista se mantiene.\n"
+        )
     out.write(f"Exit code sugerido: {s.exit_code}\n")
     out.write("=" * _LINE_WIDTH + "\n")

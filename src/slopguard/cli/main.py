@@ -16,6 +16,7 @@ Garantias de ultimo nivel en `main()`:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
@@ -88,6 +89,7 @@ def _add_scan_flags(parser: argparse.ArgumentParser) -> None:
     )
     _add_override_flags(parser)
     _add_layer3_flags(parser)
+    _add_layer4_flags(parser)
 
 
 def _add_override_flags(parser: argparse.ArgumentParser) -> None:
@@ -121,6 +123,37 @@ def _add_layer3_flags(parser: argparse.ArgumentParser) -> None:
         help="Activa la watchlist de alucinaciones conocidas (depscope).",
     )
     _add_layer3_overrides(parser)
+
+
+def _add_layer4_flags(parser: argparse.ArgumentParser) -> None:
+    """Agrega los flags booleanos y de modelo de Capa 4 (H3-T17).
+
+    --enable-layer4 y --no-layer4 son mutuamente excluyentes: si se pasan los
+    dos, --no-layer4 tiene precedencia (documentado en el help). El modelo LLM
+    se inyecta como override string con None como centinela (no-op en load_config).
+    """
+    layer4_group = parser.add_mutually_exclusive_group()
+    layer4_group.add_argument(
+        "--enable-layer4",
+        action="store_true",
+        default=False,
+        dest="enable_layer4",
+        help="Activa la Capa 4 (evaluacion LLM de superficie de alucinacion).",
+    )
+    layer4_group.add_argument(
+        "--no-layer4",
+        action="store_true",
+        default=False,
+        dest="no_layer4",
+        help="Desactiva la Capa 4 (prevalece sobre --enable-layer4).",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        dest="llm_model",
+        metavar="ID",
+        help="Modelo LLM a usar en Capa 4 (anula el valor del archivo de config).",
+    )
 
 
 def _add_layer3_overrides(parser: argparse.ArgumentParser) -> None:
@@ -185,18 +218,39 @@ def _cli_overrides(args: argparse.Namespace) -> dict[str, object]:
         # Capa 3 (§3.7): overrides numericos y de host
         "osv_host", "osv_ttl_cache_horas", "osv_timeout_total_por_lote_s",
         "watchlist_host", "watchlist_ttl_cache_horas",
+        # Capa 4 (H3-T17): modelo LLM como override string
+        "llm_model",
     )
     overrides: dict[str, object] = {k: getattr(args, k, None) for k in keys}
     if getattr(args, "no_layer3", False):
         overrides["enable_layer3"] = False
     if getattr(args, "enable_watchlist", False):
         overrides["enable_watchlist"] = True
+    # Capa 4: --no-layer4 tiene precedencia sobre --enable-layer4 (mutuamente excluyentes
+    # via add_mutually_exclusive_group, pero se cablea explicitamente por claridad).
+    if getattr(args, "no_layer4", False):
+        overrides["enable_layer4"] = False
+    elif getattr(args, "enable_layer4", False):
+        overrides["enable_layer4"] = True
     return overrides
 
 
 def _stderr(msg: str) -> None:
     """Escribe un mensaje saneado a stderr."""
     sys.stderr.write(sanitize_for_output(msg) + "\n")
+
+
+def _warn_if_layer4_sin_clave(config: Config) -> None:
+    """R4.1: advierte UNA vez si se pidio la Capa 4 (--enable-layer4) sin ANTHROPIC_API_KEY.
+
+    La Capa 4 se omite (el registry devuelve None), pero callar fingiria que corrio: se
+    avisa a stderr sin alterar veredictos ni exit code (los deterministas quedan intactos).
+    """
+    if config.enable_layer4 and not os.environ.get("ANTHROPIC_API_KEY"):
+        _stderr(
+            "Aviso: se pidio la Capa 4 (--enable-layer4) pero falta ANTHROPIC_API_KEY; "
+            "se omite. Los veredictos deterministas (capas 0-3) no se ven afectados."
+        )
 
 
 def _run_scan(args: argparse.Namespace) -> int:
@@ -215,6 +269,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         _stderr("Error de configuracion: verifique la ruta y el contenido del archivo.")
         return EXIT_OPERATIONAL
 
+    _warn_if_layer4_sin_clave(config)
     use_cache = not args.no_cache
     path: str = args.path
 
@@ -227,7 +282,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         _stderr(f"Error de configuracion: {sanitize_for_output(str(exc))}")
         return EXIT_OPERATIONAL
 
-    _render(report, fmt=args.fmt)
+    _render(report, config, fmt=args.fmt)
 
     if report.error_category is not None:
         return EXIT_OPERATIONAL
@@ -279,12 +334,25 @@ def _fetch_report(
     )
 
 
-def _render(report: ScanReport, *, fmt: str) -> None:
-    """Delega al renderer correcto segun el formato elegido."""
+def _render(report: ScanReport, config: Config, *, fmt: str) -> None:
+    """Delega al renderer correcto segun el formato elegido.
+
+    Propaga los limites de truncado del texto del LLM desde la `Config` activa
+    (R7.3): el texto del LLM se sanea Y trunca en la frontera de salida, sin
+    asumir que una capa previa ya lo truncara (defensa en profundidad).
+    """
     if fmt == "json":
-        render_json_to(report)
+        render_json_to(
+            report,
+            max_patron=config.llm_max_text_patron,
+            max_rationale=config.llm_max_text_rationale,
+        )
     else:
-        render_human(report)
+        render_human(
+            report,
+            max_patron=config.llm_max_text_patron,
+            max_rationale=config.llm_max_text_rationale,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -29,7 +29,7 @@ Propiedades de ENGINE verificadas (§4.1 / RISK-H2-3, criterios H2-T12):
   - NFR-Det.1: now_epoch unico tras el batch.
 
 Propiedades de CLI/RENDER verificadas (§2.4, §3.7, R7.3/R7.4):
-  - JSON `schema_version == "1.1"` y sin timestamps de reloj (determinismo R7.3).
+  - JSON `schema_version == "1.2"` y sin timestamps de reloj (determinismo R7.3).
   - Saneo ANSI/CRLF del ID MAL-* reflejado en humano y JSON (R7.4).
   - enable_layer3=false ⇒ JSON sigue valido (lectores 1.0 ignoran lo nuevo).
 
@@ -623,10 +623,10 @@ def _malicious_report(
 def test_json_schema_version_1_1(
     monkeypatch: pytest.MonkeyPatch, top_n: TopNDataset
 ) -> None:
-    """§2.4: el JSON de salida declara `schema_version == "1.1"` (aditivo sobre 1.0)."""
+    """§2.4: el JSON de salida declara `schema_version == "1.2"` (aditivo sobre 1.0)."""
     report = _malicious_report(monkeypatch, top_n, "MAL-2025-1111")
     payload = render_json(report)
-    assert '"schema_version": "1.1"' in payload
+    assert '"schema_version": "1.2"' in payload
 
 
 def test_json_sin_timestamps_de_reloj(
@@ -687,7 +687,7 @@ def test_json_valido_con_layer3_desactivado(
 
     payload = render_json(report)
     parsed = json.loads(payload)  # JSON valido (no lanza)
-    assert parsed["schema_version"] == "1.1"
+    assert parsed["schema_version"] == "1.2"
     assert parsed["results"][0]["verdict"] == "allow"
 
 

@@ -38,7 +38,7 @@ from ..errors import NetworkUnverifiableError
 from .safe_json import safe_json_loads
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 # Allowlist BASE de hosts permitidos y unico scheme aceptado (NFR-Seg.3). La base
 # permanece anclada a {pypi.org} (guardia estatico ADR-09): los hosts de Capa 3
@@ -270,6 +270,7 @@ class SecureHttpClient:
         read_timeout_s: float,
         max_response_bytes: int,
         max_json_depth: int,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         """POST HTTPS con cuerpo JSON sobre un host de la allowlist EFECTIVA; devuelve el JSON.
 
@@ -287,7 +288,7 @@ class SecureHttpClient:
         payload = _encode_json_body(body)
         # scheme/host restringidos a https + allowlist por `_validate_url`; S310 falso positivo.
         request = urllib.request.Request(  # noqa: S310
-            url, data=payload, method="POST", headers=_safe_post_headers()
+            url, data=payload, method="POST", headers=_merged_post_headers(extra_headers)
         )
         timeout = connect_timeout_s + read_timeout_s
         response_body = self._read_response(request, timeout, max_response_bytes)
@@ -427,6 +428,41 @@ def _safe_post_headers() -> dict[str, str]:
         "Accept-Encoding": "identity",
         "Content-Type": "application/json",
     }
+
+
+# Cabeceras de autenticacion permitidas en un POST (Hito 3, ADR-15). El cliente NO
+# confia en su llamante: solo estas (normalizadas a minusculas) pueden anadirse y
+# NUNCA pueden sobrescribir Accept-Encoding: identity (defensa anti-bomba).
+_POST_HEADER_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {"x-api-key", "anthropic-version", "content-type"}
+)
+_POST_HEADER_CANONICAL: Final[dict[str, str]] = {
+    "x-api-key": "x-api-key",
+    "anthropic-version": "anthropic-version",
+    "content-type": "Content-Type",
+}
+
+
+def _merged_post_headers(extra_headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Combina las cabeceras base del POST con `extra_headers` allowlisteadas (ADR-15).
+
+    Solo admite `{x-api-key, anthropic-version, content-type}` (normalizadas a minusculas);
+    cualquier otra ⇒ `NetworkUnverifiableError`. Valida que el valor sea `str` sin CRLF
+    (anti header-injection) y NUNCA permite sobrescribir `Accept-Encoding: identity`. El
+    mensaje de error JAMAS incluye el nombre ni el valor de la cabecera (la clave
+    `x-api-key` nunca se refleja en logs/excepciones — ADR-15 / §5.1 #6).
+    """
+    headers = _safe_post_headers()
+    if not extra_headers:
+        return headers
+    for raw_name, value in extra_headers.items():
+        name = raw_name.strip().lower()
+        if name not in _POST_HEADER_ALLOWLIST:
+            raise NetworkUnverifiableError("cabecera de peticion no permitida rechazada")
+        if not isinstance(value, str) or "\n" in value or "\r" in value:
+            raise NetworkUnverifiableError("valor de cabecera de peticion invalido rechazado")
+        headers[_POST_HEADER_CANONICAL[name]] = value
+    return headers
 
 
 def _reject_excessive_content_length(response: object, max_response_bytes: int) -> None:

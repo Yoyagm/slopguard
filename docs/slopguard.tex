@@ -81,6 +81,13 @@ cobertura global 96{,}23\,\% ($\geq 90\,\%$ requerido), cobertura en paquetes cr
 limpio (82 archivos); 5 contratos de import-linter verificados; lint ruff (bandit S) sin
 errores. Capa 3 verificada en vivo: \texttt{bioql} $\Rightarrow$ \texttt{MAL-2025-47868}
 $\Rightarrow$ block. CI en GitHub Actions sobre Python 3.11 y 3.12.
+
+\medskip
+\noindent\textbf{Resultados del Hito 3 (implementación final):} 1631 pruebas en verde;
+\texttt{mypy --strict} limpio; 7 contratos import-linter; lint ruff (bandit S) sin errores.
+La Capa 4 (LLM, opt-in) nunca bloquea (canal separado $25+50=75<80$, test de propiedad);
+evaluación pre-registrada: \texttt{block} $\Delta$-ablación $=0$, \texttt{warn} P$=1{,}0$,
+$\Delta$recall$=+0{,}667$.
 \end{abstract}
 
 \tableofcontents
@@ -110,10 +117,10 @@ SlopGuard cubre ese hueco con un análisis multicapa, determinista y explicable.
 \end{itemize}
 
 % ===========================================================================
-\section{Alcance (Hitos 1 y 2)}
+\section{Alcance (Hitos 1, 2 y 3)}
 
-El producto completo tiene cinco capas (0--4) y varios \emph{frontends}. Los Hitos 1 y 2
-construyen la arquitectura extensible y las cuatro capas implementadas:
+El producto completo tiene cinco capas (0--4) y varios \emph{frontends}. Los Hitos 1, 2 y 3
+construyen la arquitectura extensible y las cinco capas (0--4) implementadas:
 
 \begin{itemize}[nosep]
   \item \textbf{Capa 0} --- existencia y edad del paquete vía PyPI JSON API.
@@ -123,10 +130,14 @@ construyen la arquitectura extensible y las cuatro capas implementadas:
   enlazado, completitud), con aporte acotado al \emph{score}.
   \item \textbf{Capa 3} --- \emph{threat-intel}: advisories \texttt{MAL-*} de OSV.dev
   (malicia confirmada) + watchlist depscope de alucinaciones conocidas (opcional).
+  \item \textbf{Capa 4} --- \emph{superficie de alucinación con LLM} (opt-in, Hito 3):
+  Claude clasifica nombres en banda gris (jóvenes/baja señal, sin señal dura) contra la
+  taxonomía conflación/typo/fabricación; la señal va en un canal de peso separado que a lo
+  sumo eleva a \texttt{warn}, nunca a \texttt{block} (garantizado por construcción).
 \end{itemize}
 
-\paragraph{Fuera de alcance (Hitos 1--2).} Análisis dinámico o ejecución del código de los
-paquetes; Capa 4 (superficie de alucinación con LLM, cacheada); \emph{frontends} pre-commit
+\paragraph{Fuera de alcance (Hitos 1--3).} Análisis dinámico o ejecución del código de los
+paquetes; \emph{frontends} pre-commit
 y GitHub Action como producto; soporte multi-ecosistema simultáneo (npm es post-MVP vía
 adaptador); embeddings o modelos ML; escaneo de vulnerabilidades generales (CVE/GHSA).
 
@@ -169,22 +180,25 @@ Capa 2 & \texttt{core/layers/layer2\_metadata.py} & metadatos (aporte acotado) \
 Dataset & \texttt{core/dataset/top_n.py} & carga + verificación de \emph{checksum} \\
 Scoring & \texttt{core/scoring/scorer.py} & combina señales $\rightarrow$ 0--100 \\
 Veredicto/exit & \texttt{core/scoring/verdict.py} & umbrales, override MALICIOUS/NONEXISTENT, agregación \\
-Config & \texttt{core/config.py} & TOML + precedencia + validación (14 nuevos defaults L3) \\
+Config & \texttt{core/config.py} & TOML + precedencia + validación (defaults L3 + L4) \\
 \textbf{TI fuente (interfaz)} & \texttt{core/threatintel/source.py} & \texttt{ThreatIntelSource} Protocol + \texttt{ThreatIntelResult} \\
 \textbf{TI OSV} & \texttt{core/threatintel/osv.py} & \texttt{POST /v1/querybatch}; filtra \texttt{MAL-*}; caché \\
 \textbf{TI watchlist} & \texttt{core/threatintel/watchlist.py} & corpus depscope; match exacto; caché \\
 \textbf{TI composite} & \texttt{core/threatintel/composite.py} & fusiona OSV + watchlist por nombre \\
 \textbf{TI resolver} & \texttt{core/threatintel/resolver.py} & chunking, dedup global, degradación de lote \\
 \textbf{TI registry} & \texttt{core/threatintel/registry.py} & factory \texttt{get\_threatintel\_source(config)} \\
-Orquestador & \texttt{core/engine.py} & manifiesto $\rightarrow$ Capa 0 concurrente $\rightarrow$ lote TI $\rightarrow$ L1/2/3 \\
-CLI & \texttt{cli/*} & argparse (\texttt{--no-layer3}/\texttt{--enable-watchlist}), render 1.1 \\
+\textbf{Capa 4} & \texttt{core/layers/layer4\_hallucination.py} & \texttt{LlmAssessment} $\rightarrow$ señal L4 (pura, canal separado) \\
+\textbf{LLM evaluador} & \texttt{core/llm/anthropic.py} & \texttt{AnthropicEvaluator}: POST \texttt{/v1/messages}, salida estructurada \\
+\textbf{LLM resolver/reg.} & \texttt{core/llm/\{resolver,registry\}.py} & gating banda gris, caché \texttt{llm-1}, factory \\
+Orquestador & \texttt{core/engine.py} & manifiesto $\rightarrow$ Capa 0 $\rightarrow$ lote TI $\rightarrow$ L1/2/3 $\rightarrow$ L4 \emph{two-pass} \\
+CLI & \texttt{cli/*} & argparse (\texttt{--enable-layer4}/\texttt{--llm-model}), render JSON 1.2 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \subsection{Contratos de arquitectura (verificados por \texttt{import-linter})}
 
-Cinco contratos declarados en \texttt{pyproject.toml} hacen fallar el build si se
+Siete contratos declarados en \texttt{pyproject.toml} hacen fallar el build si se
 cruza una frontera:
 \begin{itemize}[nosep]
   \item \texttt{core.*} \;$\not\rightarrow$\; \texttt{cli.*} (el core no depende
@@ -367,6 +381,34 @@ El redirect handler valida contra el conjunto efectivo (fix SSRF). IDs de adviso
 con \texttt{\^{}MAL-[0-9A-Za-z-]+\$}; URL reconstruida, nunca reflejada del payload. El
 corpus depscope se valida por charset y cap al recibir \textbf{y} al leer caché
 (anti-envenenamiento). \texttt{UNVERIFIABLE} nunca se persiste en caché.
+
+\medskip
+\noindent\textbf{Capa 4 --- superficie de alucinación con LLM (Hito 3, opt-in).}
+La Capa 4 corre en una \textbf{segunda pasada} (\emph{two-pass}) tras el veredicto de las
+capas 0--3: el engine identifica las dependencias en \emph{banda gris} ---existen, no están
+bloqueadas, \textbf{sin ninguna señal dura}, y son jóvenes (\texttt{edad < gray\_edad\_max\_dias})
+o tienen $\ge 1$ señal blanda--- y solo a esas las envía a un evaluador LLM (Claude
+\texttt{claude-opus-4-8}) que clasifica el nombre en la taxonomía
+\texttt{legitimo/conflacion/typo/fabricacion}. La señal \texttt{LLM\_HALLUCINATION\_SURFACE}
+ocupa un \textbf{canal de peso separado} (\texttt{is\_llm\_channel}), acotado a
+\texttt{LLM\_SOFT\_CAP}=50 \emph{fuera} del \texttt{SOFT\_CAP}=25 heurístico. Como el
+\emph{gating} garantiza \texttt{max\_hard}=0 para toda dependencia con señal L4, el \emph{score}
+máximo es $25+50=75 < 80=$\texttt{umbral\_block}: la Capa 4 \textbf{nunca bloquea}, a lo sumo
+eleva a \texttt{warn} (demostrado por construcción y test de propiedad). La salida del LLM es
+estructurada (\texttt{output\_config.format}) y se valida (clasificación en el enum,
+\texttt{confianza} finita en $[0,1]$). \texttt{LLM\_UNAVAILABLE} (sin clave, \emph{timeout},
+\emph{refusal}, tope de llamadas) es abstención de peso 0: \textbf{no} degrada el veredicto
+determinista ni el \emph{exit code}, pero se reporta de forma agregada y visible.
+
+\medskip
+\noindent\textbf{Privacidad y seguridad de la Capa 4.} Opt-in (\texttt{--enable-layer4} +
+\texttt{ANTHROPIC\_API\_KEY}). Solo se envía nombre+ecosistema+contexto determinista, nunca el
+manifiesto; el nombre no confiable se encajona como dato en el \emph{prompt} (anti
+\emph{prompt-injection}). La clave se lee solo del entorno y jamás aparece en logs, JSON,
+excepciones (incl. cadena \texttt{\_\_cause\_\_}) ni en la caché. El texto del LLM se sanea como
+entrada no confiable; \texttt{safe\_json} rechaza \texttt{NaN}/\texttt{Infinity}. Caché
+\emph{content-addressed} por \texttt{(nombre, ecosistema, contexto, modelo, prompt\_version)},
+sello \texttt{llm-1} separado del de threat-intel.
 
 % ===========================================================================
 \section{Función de \emph{scoring} (ADR-01)}
@@ -608,6 +650,30 @@ repos:
 
 % ===========================================================================
 \section{Resultados y garantías de calidad}
+
+\subsection{Resultados del Hito 3 (v0.3.0 --- implementación final)}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Métrica} & \textbf{Valor} & \textbf{Umbral requerido} \\
+\midrule
+Pruebas totales & 1631 & todas en verde \\
+\texttt{mypy --strict} & sin errores (57 archivos src+eval) & sin errores \\
+\texttt{ruff check} (bandit S) & sin errores & sin errores \\
+\texttt{lint-imports} & OK (7 contratos) & OK \\
+Cobertura & gate $\ge 90\,\%$ global / $\ge 95\,\%$ críticos & CI \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Evaluación de la Capa 4} (split \texttt{test}, \texttt{eval/run\_eval.py}):
+métricas por nivel de veredicto --- \texttt{block} precisión $=1{,}0$ con \textbf{delta de
+ablación $=0$} (la Capa 4 no afecta el \emph{block}: aislamiento estructural verificado);
+\texttt{warn}-o-peor precisión $=1{,}0 \ge 0{,}90$ (piso pre-registrado) con \textbf{$\Delta$
+recall $=+0{,}667$} al activar L4 (detecta fabricaciones/conflaciones que las capas
+deterministas no marcan, sin falsos positivos en el estrato \texttt{hard\_neg}).
 
 \subsection{Resultados del Hito 2 (v0.2.0 --- implementación final)}
 

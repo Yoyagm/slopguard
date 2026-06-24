@@ -45,3 +45,30 @@ def sanitize_for_output(text: str) -> str:
     text = _ANSI_OSC.sub("", text)
     text = _ANSI_OTHER.sub("", text)
     return _CONTROL_CHARS.sub("", text)
+
+
+# Marcador de truncado visible en salida TTY, logs y JSON.
+_TRUNCADO_MARKER: str = "...[truncado]"
+
+
+def sanitize_and_truncate(text: str, max_chars: int) -> str:
+    """Sanea PRIMERO (ANSI/C0-C1/CRLF) y trunca DESPUES con marcador (ADR-19).
+
+    El orden es critico: sanar antes de truncar evita dejar fragmentos de
+    secuencias de control huerfanos al cortar en mitad de una secuencia ANSI.
+
+    Args:
+        text: Texto externo (p.ej. patron o rationale del LLM).
+        max_chars: Longitud maxima del resultado, incluyendo el marcador si aplica.
+            Debe ser > len(_TRUNCADO_MARKER) para que el marcador quepa; si
+            max_chars <= len(_TRUNCADO_MARKER) se devuelve solo el marcador.
+
+    Returns:
+        Texto saneado y, si superaba max_chars, truncado con '...[truncado]'.
+    """
+    saneado = sanitize_for_output(text)
+    if len(saneado) <= max_chars:
+        return saneado
+    marker_len = len(_TRUNCADO_MARKER)
+    corte = max(0, max_chars - marker_len)
+    return saneado[:corte] + _TRUNCADO_MARKER

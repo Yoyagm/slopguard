@@ -120,13 +120,14 @@ class DiskCache:
         payload = self._serialize(ecosystem, name, outcome, fetched_at)
         self._atomic_write(self._path_for(ecosystem, name), payload)
 
-    def get_blob(
+    def get_blob(  # noqa: PLR0913 (validator + ttl + schema_version + now: contrato de cache)
         self,
         namespace: str,
         key: str,
         validator: Callable[[dict[str, Any]], _T | None],
         *,
         ttl_segundos: int,
+        schema_version: str = _BLOB_SCHEMA_VERSION,
         now: float | None = None,
     ) -> _T | None:
         """Lee un blob JSON generico, namespaced, validado como entrada NO confiable.
@@ -144,8 +145,8 @@ class DiskCache:
         payload = self._read_json(self._blob_path_for(namespace, key))
         if payload is None:
             return None
-        if payload.get("cache_schema_version") != _BLOB_SCHEMA_VERSION:
-            return None  # esquema distinto al contrato L3 ⇒ miss (separa del Hito 1)
+        if payload.get("cache_schema_version") != schema_version:
+            return None  # esquema distinto ⇒ miss (separa Hito 1 / L3 / L4 por sello)
         reference_now = time.time() if now is None else now
         if self._blob_expired(payload.get("fetched_at"), reference_now, ttl_segundos):
             return None
@@ -157,6 +158,7 @@ class DiskCache:
         key: str,
         payload: dict[str, Any],
         *,
+        schema_version: str = _BLOB_SCHEMA_VERSION,
         now: float | None = None,
     ) -> None:
         """Persiste un blob JSON generico de forma atomica (0700/0600), namespaced.
@@ -174,7 +176,7 @@ class DiskCache:
         fetched_at = time.time() if now is None else now
         stamped = {
             **payload,
-            "cache_schema_version": _BLOB_SCHEMA_VERSION,
+            "cache_schema_version": schema_version,
             "fetched_at": fetched_at,
         }
         self._atomic_write(self._blob_path_for(namespace, key), stamped)

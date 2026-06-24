@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +46,14 @@ from slopguard.core.layers import (
     layer1_similarity,
     layer2_metadata,
     layer3_threatintel,
+    layer4_hallucination,
+)
+from slopguard.core.llm.registry import build_llm_cache, get_llm_evaluator
+from slopguard.core.llm.resolver import (
+    build_context,
+    is_gray_band,
+    package_age_days,
+    resolve_layer4,
 )
 from slopguard.core.manifests.detect import detect_and_parse, detect_and_parse_stdin
 from slopguard.core.models import (
@@ -53,9 +61,11 @@ from slopguard.core.models import (
     DependencyResult,
     ErrorCategory,
     LayerSignal,
+    LlmAssessment,
     MaliceState,
     ScanReport,
     ScanSummary,
+    SignalCode,
     Status,
     ThreatIntelResult,
     Verdict,
@@ -77,7 +87,10 @@ if TYPE_CHECKING:
 # anade el campo `advisories` y las senales `layer:3`; ninguna clave 1.0 se quita ni
 # renombra, asi un lector 1.0 ignora lo nuevo sin romperse (NFR-Compat.1). Con
 # enable_layer3=false la salida es identica al Hito 1 salvo esta version.
-_SCHEMA_VERSION = "1.1"
+# Hito 3 sube 1.1 -> 1.2 de forma ADITIVA: anade senales layer:4, el bloque
+# llm_assessment y summary.llm_unavailable; con enable_layer4=false solo cambia esta
+# version. Ningun campo previo se quita ni renombra (NFR-Compat.1).
+_SCHEMA_VERSION = "1.2"
 
 # Razon saneada cuando una dep FOUND no aparece en el dict de threat-intel (no deberia
 # ocurrir por la cobertura total del resolver, pero se degrada a UNVERIFIABLE, jamas
@@ -273,6 +286,7 @@ def _scan(
     results = tuple(
         _evaluate_dependency(dep, outcomes.get(dep.name), ctx) for dep in deps
     )
+    results = _apply_layer4(results, deps, outcomes, ctx, use_cache=use_cache)
     return _assemble_report(results, adapter.ecosystem_id)
 
 
@@ -288,6 +302,86 @@ def _found_names(outcomes: dict[str, FetchOutcome]) -> tuple[str, ...]:
     return tuple(
         name for name, outcome in outcomes.items() if outcome.state is FetchState.FOUND
     )
+
+
+def _apply_layer4(
+    results: tuple[DependencyResult, ...],
+    deps: tuple[Dependency, ...],
+    outcomes: dict[str, FetchOutcome],
+    ctx: _ScanContext,
+    *,
+    use_cache: bool,
+) -> tuple[DependencyResult, ...]:
+    """Segunda pasada de la Capa 4 (Hito 3, two-pass): gating + LLM + re-scoring.
+
+    Con `enable_layer4=false` o sin evaluador (sin clave) devuelve `results` intacto
+    (identico al Hito 2). Para las deps en banda gris (sin senal dura ⇒ `max_hard=0`,
+    anti-block) y en ORDEN CANONICO (nombre asc), resuelve el LLM (cache + presupuesto),
+    anade la senal L4 y re-evalua el veredicto, adjuntando el `llm_assessment`. La Capa 4
+    solo puede subir a `warn`, NUNCA a `block` (garantia estructural del scorer).
+    """
+    if not ctx.config.enable_layer4:
+        return results
+    evaluator = get_llm_evaluator(ctx.config, use_cache=use_cache)
+    if evaluator is None:
+        return results  # Capa 4 desactivada o sin ANTHROPIC_API_KEY (R5.3/R4.1)
+    cache = build_llm_cache(ctx.config, enabled=use_cache)
+    paired = list(zip(deps, results, strict=True))
+    gray = _gray_candidates(paired, outcomes, ctx)
+    items = [
+        (dep.name, build_context(dep.name, result, outcomes.get(dep.name), now_epoch=ctx.now_epoch))
+        for dep, result in gray
+    ]
+    assessments = resolve_layer4(evaluator, cache, items, ctx.config, now=ctx.now_epoch)
+    augmented = {
+        dep.name: _augment_with_layer4(dep, result, assessments.get(dep.name), ctx.config)
+        for dep, result in gray
+    }
+    return tuple(augmented.get(dep.name, result) for dep, result in paired)
+
+
+def _gray_candidates(
+    paired: list[tuple[Dependency, DependencyResult]],
+    outcomes: dict[str, FetchOutcome],
+    ctx: _ScanContext,
+) -> list[tuple[Dependency, DependencyResult]]:
+    """Filtra las deps en banda gris (ADR-12) y las ordena por nombre (orden canonico).
+
+    La edad sale de `package_age_days` con el reloj unico `ctx.now_epoch` (NFR-Det.1),
+    para la rama "joven" del gating.
+    """
+    gray = [
+        (dep, result)
+        for dep, result in paired
+        if is_gray_band(
+            result, package_age_days(outcomes.get(dep.name), ctx.now_epoch), ctx.config
+        )
+    ]
+    return sorted(gray, key=lambda pair: pair[0].name)
+
+
+def _augment_with_layer4(
+    dep: Dependency,
+    result: DependencyResult,
+    assessment: LlmAssessment | None,
+    config: Config,
+) -> DependencyResult:
+    """Re-evalua una dep gris anadiendo la senal L4 y adjunta el assessment (Hito 3).
+
+    `evaluate_layer4` da `LLM_UNAVAILABLE` (weight 0) si `assessment is None`: el
+    veredicto determinista queda intacto (degradacion segura, no degrada exit). Una
+    clasificacion de alucinacion de confianza suficiente puede elevar a `warn`.
+    """
+    l4_signals = layer4_hallucination.evaluate_layer4(assessment, config)
+    new_signals = result.signals + l4_signals
+    dep_ctx = DepContext(
+        name=dep.name,
+        version_pin=dep.version_pin,
+        is_unverifiable=False,
+        error_category=None,
+    )
+    rebuilt = build_dependency_result(dep_ctx, new_signals, config)
+    return replace(rebuilt, llm_assessment=assessment)
 
 
 def _evaluate_dependency(
@@ -404,6 +498,7 @@ def _assemble_report(
         block=counts[_RANK_BLOCK],
         unverifiable=counts[_RANK_UNVERIFIABLE],
         exit_code=0,
+        llm_unavailable=_count_llm_unavailable(ordered),
     )
     report = ScanReport(
         schema_version=_SCHEMA_VERSION,
@@ -449,6 +544,15 @@ def _count_verdicts(results: tuple[DependencyResult, ...]) -> dict[int, int]:
     for result in results:
         counts[_status_rank(result)] += 1
     return counts
+
+
+def _count_llm_unavailable(results: tuple[DependencyResult, ...]) -> int:
+    """Cuenta deps con senal LLM_UNAVAILABLE (Capa 4 activa pero no evaluable; R4.6/R7.6)."""
+    return sum(
+        1
+        for result in results
+        if any(signal.code is SignalCode.LLM_UNAVAILABLE for signal in result.signals)
+    )
 
 
 def _empty_report(ecosystem_id: str) -> ScanReport:
@@ -502,6 +606,7 @@ def _with_exit_code(report: ScanReport, exit_code: int) -> ScanReport:
         block=report.summary.block,
         unverifiable=report.summary.unverifiable,
         exit_code=exit_code,
+        llm_unavailable=report.summary.llm_unavailable,
     )
     return ScanReport(
         schema_version=report.schema_version,

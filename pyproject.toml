@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slopguard"
-version = "0.2.0"
+version = "0.3.0"
 description = "Guardian pre-instalacion contra slopsquatting: detecta dependencias Python alucinadas, typosquatting o maliciosas antes de instalarlas."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -67,6 +67,11 @@ files = ["src", "tests"]
 warn_unreachable = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+
+# run_eval vive en eval/ fuera del mypy_path; se ignoran sus imports faltantes.
+[[tool.mypy.overrides]]
+module = "run_eval"
+ignore_missing_imports = true
 
 # --- Pruebas ----------------------------------------------------------------
 [tool.pytest.ini_options]
@@ -138,4 +143,27 @@ forbidden_modules = [
   "slopguard.core.threatintel.watchlist",
   "slopguard.core.threatintel.composite",
   "slopguard.core.threatintel.resolver",
+]
+
+# H3-T21: contratos de frontera de la Capa 4 (LLM) — ADR-17 ------------------
+
+# (4) Capas y scoring no dependen del evaluador LLM ni su transporte (ADR-17).
+#     LlmAssessment vive en core.models (hoja); layer4 lo recibe ya resuelto.
+[[tool.importlinter.contracts]]
+name = "Capas y scoring no dependen del LLM (ADR-17)"
+type = "forbidden"
+source_modules = ["slopguard.core.layers", "slopguard.core.scoring"]
+forbidden_modules = ["slopguard.core.llm"]
+
+# (5) Capa 4 pura: recibe el LlmAssessment ya resuelto; nunca conoce LLM/red/scoring/
+#     threat-intel. Refuerza el anti-block (la pureza de la capa) a nivel de submódulo.
+[[tool.importlinter.contracts]]
+name = "Capa 4 pura no conoce LLM/red/scoring (ADR-17)"
+type = "forbidden"
+source_modules = ["slopguard.core.layers.layer4_hallucination"]
+forbidden_modules = [
+  "slopguard.core.llm",
+  "slopguard.core.net",
+  "slopguard.core.scoring",
+  "slopguard.core.threatintel",
 ]

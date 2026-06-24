@@ -68,6 +68,11 @@ warn_unreachable = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 
+# run_eval vive en eval/ fuera del mypy_path; se ignoran sus imports faltantes.
+[[tool.mypy.overrides]]
+module = "run_eval"
+ignore_missing_imports = true
+
 # --- Pruebas ----------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]

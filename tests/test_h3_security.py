@@ -13,6 +13,8 @@ import urllib.error
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from slopguard.cli.main import _warn_if_layer4_sin_clave
 from slopguard.core.cache.disk_cache import DiskCache
 from slopguard.core.config import Config
@@ -80,7 +82,7 @@ def test_cabecera_no_permitida_no_refleja_valor() -> None:
         raise AssertionError("una cabecera no permitida debio rechazarse")
 
 
-def test_allowlist_solo_bajo_enable_layer4(monkeypatch) -> None:
+def test_allowlist_solo_bajo_enable_layer4(monkeypatch: pytest.MonkeyPatch) -> None:
     """§5.1 #9: api.anthropic.com entra al allowlist SOLO con enable_layer4 + clave."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", _SECRET)
     # enable_layer4=False -> sin evaluador (no se anade host).
@@ -88,10 +90,10 @@ def test_allowlist_solo_bajo_enable_layer4(monkeypatch) -> None:
     # enable_layer4=True + clave -> evaluador con el host en el allowlist efectivo.
     evaluator = get_llm_evaluator(Config(enable_layer4=True), use_cache=False)
     assert evaluator is not None
-    assert "api.anthropic.com" in evaluator._http._allowed_hosts  # type: ignore[attr-defined]
+    assert any(host == "api.anthropic.com" for host in evaluator._http._allowed_hosts)  # type: ignore[attr-defined]
 
 
-def test_sin_clave_no_hay_evaluador(monkeypatch) -> None:
+def test_sin_clave_no_hay_evaluador(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sin ANTHROPIC_API_KEY no se construye evaluador aunque enable_layer4=True (R4.1)."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert get_llm_evaluator(Config(enable_layer4=True), use_cache=False) is None
@@ -119,7 +121,9 @@ def test_cache_llm_separada_de_threatintel(tmp_path: Path) -> None:
                           schema_version="llm-1", now=1000.0) is None
 
 
-def test_aviso_layer4_sin_clave(monkeypatch, capsys) -> None:
+def test_aviso_layer4_sin_clave(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """R4.1: --enable-layer4 sin clave ⇒ aviso unico a stderr (no finge 'todo limpio')."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _warn_if_layer4_sin_clave(Config(enable_layer4=True))
@@ -128,14 +132,18 @@ def test_aviso_layer4_sin_clave(monkeypatch, capsys) -> None:
     assert "Capa 4" in err
 
 
-def test_sin_aviso_si_layer4_off(monkeypatch, capsys) -> None:
+def test_sin_aviso_si_layer4_off(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Capa 4 desactivada ⇒ sin aviso (comportamiento identico al Hito 2)."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _warn_if_layer4_sin_clave(Config(enable_layer4=False))
     assert capsys.readouterr().err == ""
 
 
-def test_sin_aviso_con_clave(monkeypatch, capsys) -> None:
+def test_sin_aviso_con_clave(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Con clave presente no se advierte (la Capa 4 si correra)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", _SECRET)
     _warn_if_layer4_sin_clave(Config(enable_layer4=True))

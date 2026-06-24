@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+from typing import Any
 
 import pytest
 
@@ -140,14 +141,15 @@ def _report(
 # ===========================================================================
 
 
-def _json_with_assessment(**assessment_kwargs: object) -> dict[str, object]:
+def _json_with_assessment(**assessment_kwargs: object) -> dict[str, Any]:
     """Render JSON de un report de una dep con LlmAssessment; devuelve el JSON parseado."""
     assessment = _assessment(**assessment_kwargs)  # type: ignore[arg-type]
     report = _report(
         (_result(assessment=assessment),),
         summary=_summary(llm_unavailable=3),
     )
-    return json.loads(render_json(report))
+    result: dict[str, Any] = json.loads(render_json(report))
+    return result
 
 
 def test_json_llm_assessment_presente_con_clasificacion() -> None:

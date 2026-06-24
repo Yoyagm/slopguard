@@ -47,6 +47,10 @@ from __future__ import annotations
 # (hoja) y re-exportadas aqui para conservar `from ...scorer import SOFT_CAP`.
 from slopguard.core.models import LLM_SOFT_CAP, SOFT_CAP, LayerSignal, SignalCode
 
+# Re-export explícito para que `no_implicit_reexport` de mypy no rechace los
+# `from slopguard.core.scoring.scorer import SOFT_CAP/LLM_SOFT_CAP` de los tests.
+__all__ = ["LLM_SOFT_CAP", "SOFT_CAP"]
+
 # Cota maxima del score (R5.1).
 SCORE_MAX = 100
 

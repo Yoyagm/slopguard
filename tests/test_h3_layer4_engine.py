@@ -6,14 +6,18 @@ con un evaluador FALSO inyectado via monkeypatch y la cache deshabilitada (use_c
 
 from __future__ import annotations
 
+import pytest
+
 from slopguard.core import engine
 from slopguard.core.adapters.base import FetchOutcome, FetchState, PackageMetadata
 from slopguard.core.config import Config
+from slopguard.core.dataset.top_n import build_top_n
 from slopguard.core.layers.layer4_hallucination import evaluate_layer4
 from slopguard.core.llm.resolver import is_gray_band
 from slopguard.core.models import (
     Clasificacion,
     Dependency,
+    DependencyResult,
     Layer,
     LayerSignal,
     LlmAssessment,
@@ -41,7 +45,7 @@ def _new_package_signal() -> LayerSignal:
     )
 
 
-def _gray_result(config: Config, name: str = "reqursts") -> object:
+def _gray_result(config: Config, name: str = "reqursts") -> DependencyResult:
     """DependencyResult pre-L4 en banda gris: OK, ALLOW, con una blanda (NEW_PACKAGE)."""
     return build_dependency_result(
         DepContext(name=name, version_pin=None, is_unverifiable=False, error_category=None),
@@ -68,9 +72,12 @@ def _outcome(name: str = "reqursts", *, edad_dias: int = 10) -> FetchOutcome:
     )
 
 
-def _ctx(config: Config) -> object:
+def _ctx(config: Config) -> engine._ScanContext:
     return engine._ScanContext(
-        config=config, now_epoch=1_700_000_000.0, top_n=None, threat_intel={}
+        config=config,
+        now_epoch=1_700_000_000.0,
+        top_n=build_top_n([], version="test", generated_at="test"),
+        threat_intel={},
     )
 
 
@@ -157,7 +164,7 @@ def test_is_gray_band_joven_sin_blanda() -> None:
 
 # --- engine two-pass (_apply_layer4) ---
 
-def test_two_pass_eleva_a_warn_nunca_block(monkeypatch) -> None:
+def test_two_pass_eleva_a_warn_nunca_block(monkeypatch: pytest.MonkeyPatch) -> None:
     config = Config(enable_layer4=True)
     fab = _assess(Clasificacion.FABRICACION, 1.0)
     fake = _FakeEvaluator(fab)
@@ -170,11 +177,11 @@ def test_two_pass_eleva_a_warn_nunca_block(monkeypatch) -> None:
     )
     assert fake.calls == 1
     assert out[0].verdict is Verdict.WARN  # 15 (NEW_PACKAGE) + min(55,50)=50 -> 65 -> warn
-    assert out[0].verdict is not Verdict.BLOCK
+    assert out[0].verdict is not Verdict.BLOCK  # type: ignore[comparison-overlap]
     assert out[0].llm_assessment is fab
 
 
-def test_two_pass_abstencion_preserva_veredicto(monkeypatch) -> None:
+def test_two_pass_abstencion_preserva_veredicto(monkeypatch: pytest.MonkeyPatch) -> None:
     config = Config(enable_layer4=True)
     fake = _FakeEvaluator(None)
     monkeypatch.setattr(engine, "get_llm_evaluator", lambda _c, *, use_cache: fake)
@@ -189,7 +196,7 @@ def test_two_pass_abstencion_preserva_veredicto(monkeypatch) -> None:
     assert out[0].status is Status.OK  # no degrada a unverifiable
 
 
-def test_two_pass_off_es_identico(monkeypatch) -> None:
+def test_two_pass_off_es_identico(monkeypatch: pytest.MonkeyPatch) -> None:
     config = Config(enable_layer4=False)
     # Si por error llamara al factory, fallaria; verifica que NO lo llama.
     def _boom(_c: object, *, use_cache: bool) -> object:

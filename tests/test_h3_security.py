@@ -13,6 +13,7 @@ import urllib.error
 from pathlib import Path
 from typing import Any
 
+from slopguard.cli.main import _warn_if_layer4_sin_clave
 from slopguard.core.cache.disk_cache import DiskCache
 from slopguard.core.config import Config
 from slopguard.core.errors import NetworkUnverifiableError
@@ -116,3 +117,26 @@ def test_cache_llm_separada_de_threatintel(tmp_path: Path) -> None:
     cache.put_blob("osv", "k2", {"state": "clean"}, schema_version="ti-1", now=1000.0)
     assert cache.get_blob("osv", "k2", _validator, ttl_segundos=10**9,
                           schema_version="llm-1", now=1000.0) is None
+
+
+def test_aviso_layer4_sin_clave(monkeypatch, capsys) -> None:
+    """R4.1: --enable-layer4 sin clave ⇒ aviso unico a stderr (no finge 'todo limpio')."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _warn_if_layer4_sin_clave(Config(enable_layer4=True))
+    err = capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY" in err
+    assert "Capa 4" in err
+
+
+def test_sin_aviso_si_layer4_off(monkeypatch, capsys) -> None:
+    """Capa 4 desactivada ⇒ sin aviso (comportamiento identico al Hito 2)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _warn_if_layer4_sin_clave(Config(enable_layer4=False))
+    assert capsys.readouterr().err == ""
+
+
+def test_sin_aviso_con_clave(monkeypatch, capsys) -> None:
+    """Con clave presente no se advierte (la Capa 4 si correra)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _SECRET)
+    _warn_if_layer4_sin_clave(Config(enable_layer4=True))
+    assert capsys.readouterr().err == ""

@@ -16,6 +16,7 @@ Garantias de ultimo nivel en `main()`:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
@@ -239,6 +240,19 @@ def _stderr(msg: str) -> None:
     sys.stderr.write(sanitize_for_output(msg) + "\n")
 
 
+def _warn_if_layer4_sin_clave(config: Config) -> None:
+    """R4.1: advierte UNA vez si se pidio la Capa 4 (--enable-layer4) sin ANTHROPIC_API_KEY.
+
+    La Capa 4 se omite (el registry devuelve None), pero callar fingiria que corrio: se
+    avisa a stderr sin alterar veredictos ni exit code (los deterministas quedan intactos).
+    """
+    if config.enable_layer4 and not os.environ.get("ANTHROPIC_API_KEY"):
+        _stderr(
+            "Aviso: se pidio la Capa 4 (--enable-layer4) pero falta ANTHROPIC_API_KEY; "
+            "se omite. Los veredictos deterministas (capas 0-3) no se ven afectados."
+        )
+
+
 def _run_scan(args: argparse.Namespace) -> int:
     """Orquesta el subcomando scan. Retorna el exit code entero."""
     # Validar ecosystem antes de construir la config (borde conocido: ValueError).
@@ -255,6 +269,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         _stderr("Error de configuracion: verifique la ruta y el contenido del archivo.")
         return EXIT_OPERATIONAL
 
+    _warn_if_layer4_sin_clave(config)
     use_cache = not args.no_cache
     path: str = args.path
 

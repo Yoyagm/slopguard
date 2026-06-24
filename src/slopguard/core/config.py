@@ -174,6 +174,9 @@ class Config:
     llm_ttl_cache_horas: int = 168
     llm_timeout_total_s: float = 30.0
     llm_reintentos: int = 2
+    # Reservado (R4.6): umbral de fraccion para el aviso agregado. Hoy el aviso se emite
+    # con CUALQUIER llm_unavailable>0 (mas conservador: nunca finge "todo limpio"); este
+    # parametro queda para una version futura que module el aviso por fraccion.
     llm_unavailable_warn_frac: float = 0.2
     llm_max_tokens: int = 512
 

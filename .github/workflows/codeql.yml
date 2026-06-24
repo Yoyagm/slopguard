@@ -31,14 +31,6 @@ jobs:
         with:
           languages: python
           queries: security-extended
-          # SAST sobre el codigo SHIPPEADO (src/). El harness de tests hace
-          # aserciones tipo `"host" in resultado` y planta violaciones a proposito
-          # (guardias anti-vacuos), lo que dispara falsos positivos de
-          # py/incomplete-url-substring-sanitization sin ser vulnerabilidades reales.
-          config: |
-            paths-ignore:
-              - tests
-              - scripts
 
       - name: Analizar
         uses: github/codeql-action/analyze@v4

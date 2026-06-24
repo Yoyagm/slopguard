@@ -543,7 +543,7 @@ class TestAllowlistPorInstancia:
 
     def test_depscope_no_en_efectivo_sin_watchlist(self) -> None:
         """R2.1: depscope.dev no entra al allowlist si enable_watchlist=false."""
-        assert "depscope.dev" not in SecureHttpClient()._allowed_hosts
+        assert SecureHttpClient()._allowed_hosts == frozenset({"pypi.org"})
 
     def test_host_no_allowlist_rechazado(self) -> None:
         with pytest.raises(NetworkUnverifiableError, match="allowlist"):

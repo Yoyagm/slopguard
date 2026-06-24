@@ -148,8 +148,8 @@ def test_is_ip_literal_rechaza_no_ip(host: str) -> None:
 
 def test_constructor_admite_host_fqdn_valido() -> None:
     client = SecureHttpClient(extra_allowed_hosts=_OSV_HOSTS)
-    assert _OSV_HOST in client._allowed_hosts
-    assert "pypi.org" in client._allowed_hosts  # la base anclada sigue presente
+    # Igualdad EXACTA: base anclada {pypi.org} mas los extra, sin hosts inesperados.
+    assert client._allowed_hosts == frozenset({"pypi.org"}) | _OSV_HOSTS
 
 
 def test_constructor_base_anclada_sin_extra() -> None:

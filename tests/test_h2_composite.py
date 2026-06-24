@@ -355,7 +355,7 @@ class TestAllowedHosts:
     def test_sin_watchlist_depscope_no_aparece(self) -> None:
         stub_osv = _StubSource("osv", {}, extra_hosts=frozenset({"api.osv.dev"}))
         comp = CompositeSource((stub_osv,))
-        assert "depscope.dev" not in comp.extra_allowed_hosts
+        assert comp.extra_allowed_hosts == frozenset({"api.osv.dev"})
 
     def test_source_id_es_composite(self) -> None:
         stub = _StubSource("osv", {})
@@ -395,16 +395,14 @@ class TestRegistry:
         config = _cfg(enable_layer3=True, enable_watchlist=False)
         source = get_threatintel_source(config, use_cache=False)
         assert source is not None
-        assert "depscope.dev" not in source.extra_allowed_hosts
-        assert "api.osv.dev" in source.extra_allowed_hosts
+        assert source.extra_allowed_hosts == frozenset({"api.osv.dev"})
 
     def test_enable_layer3_true_watchlist_true_incluye_depscope(self) -> None:
         # Con watchlist: depscope.dev SÍ está (R2.1)
         config = _cfg(enable_layer3=True, enable_watchlist=True)
         source = get_threatintel_source(config, use_cache=False)
         assert source is not None
-        assert "depscope.dev" in source.extra_allowed_hosts
-        assert "api.osv.dev" in source.extra_allowed_hosts
+        assert source.extra_allowed_hosts == frozenset({"api.osv.dev", "depscope.dev"})
 
     def test_enable_layer3_false_sin_hosts_de_red(self) -> None:
         # None => el engine no amplía el allowlist con hosts de Capa 3 (R5.3)
@@ -709,13 +707,13 @@ class TestPrivacidadAllowlist:
         config = _cfg(enable_layer3=True, enable_watchlist=False)
         source = get_threatintel_source(config, use_cache=False)
         assert source is not None
-        assert "depscope.dev" not in source.extra_allowed_hosts
+        assert source.extra_allowed_hosts == frozenset({"api.osv.dev"})
 
     def test_con_watchlist_depscope_si_en_allowlist_registry(self) -> None:
         config = _cfg(enable_layer3=True, enable_watchlist=True)
         source = get_threatintel_source(config, use_cache=False)
         assert source is not None
-        assert "depscope.dev" in source.extra_allowed_hosts
+        assert source.extra_allowed_hosts == frozenset({"api.osv.dev", "depscope.dev"})
 
     def test_enable_layer3_false_ningun_host_extra(self) -> None:
         # None => sin hosts de threat-intel en el allowlist del engine
@@ -727,10 +725,10 @@ class TestPrivacidadAllowlist:
         # Via stubs: solo el OSV-stub => depscope no aparece
         stub_osv = _StubSource("osv", {}, extra_hosts=frozenset({"api.osv.dev"}))
         comp = CompositeSource((stub_osv,))
-        assert "depscope.dev" not in comp.extra_allowed_hosts
+        assert comp.extra_allowed_hosts == frozenset({"api.osv.dev"})
 
     def test_stub_composite_con_watchlist_stub(self) -> None:
         stub_osv = _StubSource("osv", {}, extra_hosts=frozenset({"api.osv.dev"}))
         stub_wl = _StubSource("watchlist", {}, extra_hosts=frozenset({"depscope.dev"}))
         comp = CompositeSource((stub_osv, stub_wl))
-        assert "depscope.dev" in comp.extra_allowed_hosts
+        assert comp.extra_allowed_hosts == frozenset({"api.osv.dev", "depscope.dev"})

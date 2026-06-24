@@ -719,8 +719,8 @@ class TestAllowlistPorInstancia:
     def test_extra_hosts_amplian_el_efectivo(self) -> None:
         """Con extra_allowed_hosts={api.osv.dev}, el efectivo es {pypi.org, api.osv.dev}."""
         client = SecureHttpClient(extra_allowed_hosts=frozenset({"api.osv.dev"}))
-        assert "api.osv.dev" in client._allowed_hosts
-        assert "pypi.org" in client._allowed_hosts
+        # Igualdad EXACTA del set: prueba la ampliacion Y que no se cuela ningun host.
+        assert client._allowed_hosts == frozenset({"pypi.org", "api.osv.dev"})
 
     def test_sin_extra_solo_pypi_en_efectivo(self) -> None:
         client = SecureHttpClient()
@@ -729,7 +729,7 @@ class TestAllowlistPorInstancia:
     def test_depscope_no_en_efectivo_sin_watchlist(self) -> None:
         """R2.1: depscope.dev no entra al allowlist si enable_watchlist=false."""
         client = SecureHttpClient()
-        assert "depscope.dev" not in client._allowed_hosts
+        assert frozenset({"depscope.dev"}).isdisjoint(client._allowed_hosts)
 
     def test_host_no_allowlist_rechazado_en_post(self) -> None:
         """URL hacia host fuera del efectivo => NetworkUnverifiableError."""

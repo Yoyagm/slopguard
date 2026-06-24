@@ -425,7 +425,7 @@ def test_guard2_url_exime_display_osv_pero_muerde_otros() -> None:
 
     other_display = 'REF = "https://cve.mitre.org/cgi-bin/cvename.cgi"\n'
     found = find_foreign_url_hosts(other_display)
-    assert "cve.mitre.org" in found, f"otro host de display debe morder: {found}"
+    assert found == ["cve.mitre.org"], f"otro host de display debe morder: {found}"
 
     # El allowlist explicito SIN display sigue mordiendo osv.dev (la exencion es del default).
     strict = find_foreign_url_hosts(osv_display, allowlist=ALLOWLIST)
@@ -501,7 +501,7 @@ def test_guard2_url_detecta_host_ajeno_e_ignora_pypi_y_docstrings() -> None:
     """
     evil = 'API = "https://evil.example.com/collect"\n'
     found = find_foreign_url_hosts(evil)
-    assert "evil.example.com" in found, f"no detecto host ajeno: {found}"
+    assert found == ["evil.example.com"], f"no detecto host ajeno: {found}"
 
     # pypi.org (allowlist) en un literal real NO es violacion.
     allowed = 'BASE = "https://pypi.org/pypi/{name}/json"\n'
@@ -684,11 +684,14 @@ def test_g5_depscope_solo_con_watchlist_activa() -> None:
     esta apagada, ni osv ni depscope aparecen (modo solo-deterministas, R5.3).
     """
     sin_wl = _effective_allowlist(Config(enable_layer3=True, enable_watchlist=False))
-    assert "depscope.dev" not in sin_wl, "depscope.dev entro con watchlist apagada (R2.1)"
+    assert sin_wl == frozenset({"pypi.org", "api.osv.dev"}), (
+        "depscope.dev entro con watchlist apagada (R2.1)"
+    )
 
     con_wl = _effective_allowlist(Config(enable_layer3=True, enable_watchlist=True))
-    assert "depscope.dev" in con_wl, "depscope.dev no entro con watchlist activa"
-    assert "api.osv.dev" in con_wl, "api.osv.dev debe estar con Capa 3 activa"
+    assert con_wl == frozenset({"pypi.org", "api.osv.dev", "depscope.dev"}), (
+        "conjunto efectivo con watchlist activa difiere del esperado"
+    )
 
     apagada = _effective_allowlist(Config(enable_layer3=False))
     assert apagada == ALLOWLIST, "Capa 3 apagada debe dejar solo la base {pypi.org}"

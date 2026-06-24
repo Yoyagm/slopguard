@@ -20,7 +20,6 @@ import io
 import json
 import os
 import stat
-import sys
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -245,24 +244,23 @@ class TestThreatIntelSourceProtocol:
         _ = src.extra_allowed_hosts
 
     def test_source_no_importa_net(self) -> None:
-        """source.py no debe importar core.net (contrato import-linter 2)."""
+        """source.py no expone simbolos de core.net (refuerza el contrato import-linter 2)."""
         import slopguard.core.threatintel.source as source_mod  # noqa: PLC0415
 
-        net_modules_cargados = {k for k in sys.modules if "slopguard.core.net" in k}
+        # Modulo de origen de cada simbolo expuesto por source.py.
         source_attrs = {
             v.__module__
             for v in vars(source_mod).values()
             if hasattr(v, "__module__")
         }
-        for attr_module in source_attrs:
-            assert "core.net" not in (attr_module or "")
-        # La existencia de net en sys.modules puede ser por otros imports (tests previos);
-        # lo que importa es que source_mod no exponga simbolos de core.net directamente.
-        assert not any(
-            "slopguard.core.net" in m
-            for m in ((getattr(source_mod, "__spec__", None) and []) or [])
-        )
-        _ = net_modules_cargados  # referenciado para evitar F841
+        # Coincidencia EXACTA por prefijo de paquete (no substring): ningun simbolo
+        # expuesto debe provenir de core.net ni de un submodulo suyo.
+        net_attrs = {
+            m
+            for m in source_attrs
+            if m == "slopguard.core.net" or (m or "").startswith("slopguard.core.net.")
+        }
+        assert net_attrs == set(), f"source.py expone simbolos de core.net: {net_attrs}"
 
 
 # ===========================================================================
@@ -608,8 +606,7 @@ class TestPostJsonAllowlist:
 
     def test_allowlist_efectivo_es_union(self) -> None:
         client = SecureHttpClient(extra_allowed_hosts=frozenset({"api.osv.dev"}))
-        assert "api.osv.dev" in client._allowed_hosts
-        assert "pypi.org" in client._allowed_hosts
+        assert client._allowed_hosts == frozenset({"pypi.org", "api.osv.dev"})
 
     def test_post_json_serializa_y_devuelve_dict(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1161,8 +1158,6 @@ class TestAllowlistGuardiaEstatico:
     def test_base_es_exactamente_pypi_org(self) -> None:
         """La constante base NUNCA crece con hosts de Capa 3."""
         assert hc.ALLOWED_HOSTS == frozenset({"pypi.org"})
-        assert "api.osv.dev" not in hc.ALLOWED_HOSTS
-        assert "depscope.dev" not in hc.ALLOWED_HOSTS
 
     def test_hosts_efectivos_posibles_son_subconjunto_cerrado(self) -> None:
         """Ningun host fuera de {pypi.org, api.osv.dev, depscope.dev} debe aparecer."""
@@ -1178,13 +1173,13 @@ class TestAllowlistGuardiaEstatico:
 
     def test_depscope_no_aparece_sin_watchlist(self) -> None:
         """Si watchlist off, depscope.dev no debe entrar en el allowlist."""
-        assert "depscope.dev" not in _osv_client()._allowed_hosts
+        assert _osv_client()._allowed_hosts == frozenset({"pypi.org", "api.osv.dev"})
 
     def test_redirect_handler_usa_conjunto_efectivo(self) -> None:
         """El redirect handler del cliente usa el conjunto efectivo, no la global."""
         client = SecureHttpClient(extra_allowed_hosts=frozenset({"api.osv.dev"}))
         efectivo = client._allowed_hosts
-        assert "api.osv.dev" in efectivo
+        assert efectivo == frozenset({"pypi.org", "api.osv.dev"})
         # Redirect a api.osv.dev SIGUE rechazado (politica: no redirects nunca)
         handler = hc._RejectRedirectHandler(efectivo)
         with pytest.raises(NetworkUnverifiableError):

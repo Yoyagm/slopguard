@@ -6,6 +6,46 @@ y el versionado [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-24
+
+Tercer hito (**Hito 3**): **Capa 4 — superficie de alucinación con LLM**. Un evaluador LLM
+(Claude `claude-opus-4-8`) clasifica nombres en *banda gris* (existen pero jóvenes o de baja
+señal, sin señal dura) contra la taxonomía conflación/typo/fabricación, como **corroborador
+opt-in**. La señal va en un **canal de peso separado** que puede a lo sumo elevar a `warn`,
+**nunca a `block`** (garantizado por construcción). Cambios **estrictamente aditivos**; con
+`--no-layer4` (default) el comportamiento es idéntico al Hito 2.
+
+### Added
+
+- **Capa 4 — LLM:** evaluador HTTPS crudo (cero deps de runtime) sobre
+  `api.anthropic.com /v1/messages` con salida estructurada (`output_config.format`);
+  *gating* de banda gris (rama "joven" `< gray_edad_max_dias` **o** señal blanda, sin señal
+  dura); señales `LLM_HALLUCINATION_SURFACE` (canal separado) y `LLM_UNAVAILABLE` (abstención).
+- **Opt-in:** flags `--enable-layer4` / `--no-layer4` / `--llm-model`; requiere
+  `ANTHROPIC_API_KEY`. Sin clave o sin la flag, comportamiento idéntico al Hito 2.
+- **Caché L4** content-addressed (`(nombre, ecosistema, contexto, modelo, prompt_version)`),
+  sello `llm-1` separado de threat-intel; los aciertos no cuentan contra el presupuesto de red.
+- **Salida:** `schema_version` 1.2 — bloque estable `llm_assessment`, `is_llm_channel` en
+  señales y `summary.llm_unavailable`. El render humano marca el texto del LLM como *advisory,
+  NO verificado* y emite un aviso agregado de indisponibilidad sin fingir "todo limpio".
+- **Evaluación:** harness `eval/run_eval.py` precision/recall **pre-registrado**
+  (`eval/PREREGISTRO.md`), reproducible offline, con métricas por nivel de veredicto y ablación.
+
+### Security
+
+- La señal L4 **nunca bloquea**: canal acotado a `LLM_SOFT_CAP=50` con `SOFT_CAP(25) +
+  LLM_SOFT_CAP(50) = 75 < umbral_block(80)` y `max_hard=0` garantizado por el gating; verificado
+  por test de propiedad y **7 contratos import-linter** (frontera ADR-17).
+- `ANTHROPIC_API_KEY` solo de entorno; jamás en logs, JSON, excepciones (incl. cadena
+  `__cause__`) ni en la caché. Texto del LLM tratado como entrada no confiable (saneado en la
+  frontera de salida); nombre encajonado en el prompt (anti prompt-injection de 1.er/2.º orden).
+- `safe_json` endurecido rechaza `NaN`/`Infinity` en la salida estructurada del LLM.
+
+### Changed
+
+- `schema_version` del JSON `1.1` → `1.2` (aditivo, retro-compatible: ninguna clave previa se
+  quita ni renombra).
+
 ## [0.2.0] - 2026-06-23
 
 Segundo hito (**Hito 2**): Capa 3 de *threat-intel* online sobre el motor determinista

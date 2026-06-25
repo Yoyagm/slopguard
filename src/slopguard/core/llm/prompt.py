@@ -1,10 +1,12 @@
 """Construccion del prompt y esquema de salida estructurada para la Capa 4 (Hito 3).
 
 Responsabilidades:
-- ``PROMPT_VERSION``: identificador de version del prompt (clave de cache).
 - ``RESPONSE_SCHEMA``: esquema JSON para ``output_config.format`` del API de Anthropic.
 - ``build_prompt``: genera el prompt con nombre+contexto encajonados como datos,
   mitigando inyeccion de primer orden (ADR-19).
+
+La version del prompt (clave de cache/sello) vive como default de ``Config.prompt_version``
+(ADR-6, H4-T31): un solo literal en el repo, sin duplicado aqui.
 
 Sin dependencias de red ni de config: funcion pura de dominio.
 """
@@ -12,8 +14,6 @@ Sin dependencias de red ni de config: funcion pura de dominio.
 from __future__ import annotations
 
 from slopguard.core.models import HallucinationContext
-
-PROMPT_VERSION: str = "h3-v1"
 
 # Esquema de salida estructurada para output_config.format.
 # json_schema NO soporta minimum/maximum: confianza se valida en cliente
@@ -34,25 +34,54 @@ RESPONSE_SCHEMA: dict[str, object] = {
 }
 
 
-def build_prompt(name: str, context: HallucinationContext) -> str:
+_ECOSYSTEM_LABELS: dict[str, str] = {
+    "pypi": "PyPI",
+    "npm": "npm",
+}
+
+
+def _ecosystem_label(ecosystem_id: str) -> str:
+    """Resuelve la etiqueta del ecosistema desde la tabla cerrada (fail-closed).
+
+    Un ``ecosystem_id`` fuera de la tabla es un error de cableado (el registro de
+    adapters es cerrado): se rechaza con ``ValueError`` en vez de reflejar el valor
+    crudo en la zona de instrucciones del prompt (anti prompt-injection).
+    """
+    try:
+        return _ECOSYSTEM_LABELS[ecosystem_id]
+    except KeyError:
+        raise ValueError(
+            "ecosystem_id fuera de la tabla cerrada (debe ser 'pypi' o 'npm')"
+        ) from None
+
+
+def build_prompt(name: str, context: HallucinationContext, ecosystem_id: str = "pypi") -> str:
     """Construye el prompt para clasificar un nombre de paquete sospechoso.
 
     El nombre y el contexto se encajonan entre delimitadores
     ``<paquete_no_confiable>…</paquete_no_confiable>`` con instruccion explícita
     de tratarlos como dato, no como instruccion (ADR-19, anti prompt-injection).
 
+    El texto del ecosistema ("PyPI" o "npm") se elige de una tabla cerrada
+    a partir de ``ecosystem_id``; nunca se refleja el valor crudo en el prompt.
+    Un ``ecosystem_id`` fuera de la tabla cerrada es un error de cableado (el
+    registro de adapters es cerrado): se rechaza con ``ValueError`` (fail-closed),
+    en vez de reflejarlo en la zona de instrucciones del prompt (anti-inyeccion).
+
     Args:
         name: Nombre normalizado del paquete a evaluar.
         context: Contexto deterministico derivado de las capas 0-2.
+        ecosystem_id: Identificador del ecosistema (``"pypi"`` o ``"npm"``).
 
     Returns:
         Texto del prompt listo para enviarse como ``messages[0].content``.
     """
+    ecosystem_label = _ecosystem_label(ecosystem_id)
     context_lines = _format_context(context)
 
     return f"""\
 Eres un auditor de seguridad de cadena de suministro de software. Tu tarea es \
-clasificar el nombre de un paquete PyPI en una de estas categorias:
+clasificar el nombre de un paquete {ecosystem_label} en una de estas categorias:
 
 - legitimo: paquete real bien establecido, sin indicios de alucinacion.
 - conflacion: mezcla o combinacion de dos paquetes reales existentes.

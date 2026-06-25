@@ -11,6 +11,9 @@ Chequea max_manifest_bytes ANTES de leer el contenido completo (R1.9).
 Manifiesto vacio → 0 deps, exit 0 (R1.7).
 Malformado → ManifestParseError con ruta (+linea si el parser la expone),
 sin stacktrace crudo (R1.8).
+
+H4-T18: detect_ecosystem(path, override) — seleccion de ecosistema npm/pypi.
+Precedencia estricta: override → stdin-guard → auto-deteccion (R1.2/R1.3/R1.5).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..config import Config
-from ..errors import ManifestParseError
+from ..errors import InvalidConfigError, ManifestParseError
 from ..models import Dependency
 from ..normalize import sanitize_for_output
 from .pip_freeze import parse_pip_freeze, parse_pip_freeze_file
@@ -27,6 +30,61 @@ from .requirements_txt import parse_requirements_txt_entry as parse_requirements
 
 # Tipos de manifiesto reconocidos (usados por --manifest-type).
 MANIFEST_TYPES = frozenset({"requirements", "pyproject", "freeze"})
+
+# Ecosistemas soportados (R1.4).
+_SUPPORTED_ECOSYSTEMS: frozenset[str] = frozenset({"pypi", "npm"})
+
+
+def detect_ecosystem(path: Path | None, override: str | None) -> str:
+    """Detecta el ecosistema (pypi/npm) con precedencia estricta (H4-T18, R1.2/R1.3/R1.5).
+
+    Precedencia: override → stdin-guard → auto-deteccion por nombre de archivo.
+    Raises InvalidConfigError (override invalido o stdin sin --ecosystem).
+    Raises ManifestParseError (nombre de archivo no reconocido).
+    """
+    if override is not None:
+        return _resolve_override(override)
+
+    if path is None:
+        raise InvalidConfigError(
+            "La entrada por stdin requiere --ecosystem explicito "
+            "(no hay nombre de archivo del que inferir el ecosistema)."
+        )
+
+    return _autodetect_by_name(path)
+
+
+def _resolve_override(override: str) -> str:
+    """Valida y retorna el override de ecosistema (R1.3/R1.4)."""
+    if override not in _SUPPORTED_ECOSYSTEMS:
+        safe = sanitize_for_output(override)
+        available = ", ".join(sorted(_SUPPORTED_ECOSYSTEMS))
+        raise InvalidConfigError(
+            f"Ecosistema '{safe}' no soportado. "
+            f"Disponibles: {available}."
+        )
+    return override
+
+
+def _autodetect_by_name(path: Path) -> str:
+    """Auto-detecta ecosistema por nombre de archivo (R1.2)."""
+    name = path.name.lower()
+
+    if name == "package.json":
+        return "npm"
+
+    if name == "pyproject.toml":
+        return "pypi"
+
+    # requirements*.txt y cualquier otro .txt se tratan como manifiesto Python (pypi).
+    if name.endswith(".txt"):
+        return "pypi"
+
+    safe_name = sanitize_for_output(path.name)
+    raise ManifestParseError(
+        f"No se puede determinar el ecosistema para '{safe_name}'. "
+        f"Use --ecosystem {{npm,pypi}} para forzarlo."
+    )
 
 
 def detect_and_parse(

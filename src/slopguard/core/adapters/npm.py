@@ -90,3 +90,45 @@ def _is_valid_npm_osv_name(name: str) -> bool:
     (R8.3, defensa en profundidad anti-reflejo).
     """
     return _is_valid_npm_structure(name, max_len=_NPM_OSV_NAME_MAX_LEN)
+
+
+def _normalize_npm_name(raw: str) -> str:
+    """Normaliza un nombre npm: strip+lower, preservando la estructura scoped (§3.4).
+
+    Para nombres simples: `strip().lower()`.
+    Para nombres scoped `@scope/name`: normaliza cada segmento por separado y los
+    reune con `/`, preservando el `@` inicial y sin colapsar el separador de scope.
+    NO aplica colapso PEP 503 de `._-` (eso es PyPI, R3.4).
+    Idempotente: `normalize(normalize(x)) == normalize(x)` (R3.2).
+    """
+    stripped = raw.strip()
+    if stripped.startswith("@") and "/" in stripped:
+        # Scoped: dividir en "@scope" y "name", normalizar cada parte.
+        scope_part, _, name_part = stripped.partition("/")
+        return f"{scope_part.strip().lower()}/{name_part.strip().lower()}"
+    return stripped.lower()
+
+
+class NpmAdapter:
+    """Adapter del ecosistema npm: normalize_name (H4-T02).
+
+    H4-T02 implementa `normalize_name` (§3.4, R3.1/R3.2/R3.4). Los metodos
+    `fetch`/`fetch_attempt`/`load_top_n`/`get_downloads` se implementan en tareas
+    posteriores (H4-T06, H4-T07, H4-T11) que amplian esta clase sin tocar el nucleo
+    de charset definido por H4-T01.
+
+    Frontera de arquitectura (R10.1): este modulo SI puede usar net/cache/dataset;
+    las capas y el scoring importan SOLO de `adapters.base`, nunca de aqui (import-linter).
+    """
+
+    ecosystem_id: str = "npm"
+
+    def normalize_name(self, raw: str) -> str:
+        """Normaliza un nombre npm segun las reglas del ecosistema (§3.4, R3.1/R3.2).
+
+        Aplica strip()+lower(); para nombres scoped `@scope/name` normaliza cada
+        segmento por separado preservando el `/` (sin colapsar) y el `@` inicial.
+        No aplica colapso PEP 503 de `._-` (eso es PyPI, R3.4).
+        Idempotente: normalize(normalize(x)) == normalize(x).
+        """
+        return _normalize_npm_name(raw)

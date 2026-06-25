@@ -9,8 +9,9 @@ alucinados conocidos (depscope-hallucinations). El flujo de `query_batch` es:
    fuente se instancia, lo que solo ocurre con `enable_watchlist=true`, R2.1).
 2. Parsea el corpus de forma TOLERANTE (lista de strings, o lista de objetos con `name`/
    `package`): estructura inesperada ⇒ corpus None ⇒ todos los nombres `UNVERIFIABLE`, sin
-   crashear (R2.5). Cada nombre se normaliza PEP 503 y se valida por charset AL LEER (descarta
-   invalidos, anti-envenenamiento); aplica el cap `_WATCHLIST_MAX_NAMES` (anti-DoS de memoria).
+   crashear (R2.5). Cada nombre se normaliza y valida por charset AL LEER con la regla del
+   ECOSISTEMA (PyPI = PEP 503; npm = nucleo §3.4 que admite scoped `@scope/name`, ADR-8):
+   descarta invalidos, anti-envenenamiento; aplica el cap `_WATCHLIST_MAX_NAMES` (anti-DoS).
 3. Match EXACTO: `name in corpus` ⇒ `KNOWN_HALLUCINATION` (+ fuente y fecha, R2.3); si no ⇒ `CLEAN`.
 4. Corpus ilegible/caido/sobre-cap/vacio tras validar ⇒ TODOS los nombres `UNVERIFIABLE`
    (degradacion segura, nunca un falso CLEAN — NFR-Degr.1). No invalida OSV: el `CompositeSource`
@@ -32,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from ..adapters.npm import _is_valid_npm_name, _normalize_npm_name
 from ..cache.disk_cache import DiskCache
 from ..errors import NetworkUnverifiableError
 from ..net.http_client import SecureHttpClient
@@ -39,7 +41,7 @@ from ..normalize import normalize_name, sanitize_for_output
 from .source import MaliceState, ThreatIntelResult
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from ..config import Config
 
@@ -51,10 +53,19 @@ _WATCHLIST_MAX_NAMES: Final[int] = 1_000_000
 # Charset de un nombre normalizado PEP 503 valido para el corpus (anti-envenenamiento):
 # solo minusculas, digitos y guion. CRLF/ANSI/unicode que sobreviva a `normalize_name`
 # (que no valida charset) se descarta AL LEER, antes de poder inyectar un falso match.
-_WATCHLIST_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9-]+$")
+# `\A...\Z` (no `^...$`): en Python `$` casa antes de un `\n` terminal ⇒ bypass CRLF.
+_WATCHLIST_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[a-z0-9-]+\Z")
 
 # Namespace de cache del corpus (separa por construccion de la cache OSV y la del Hito 1).
 _WATCHLIST_NAMESPACE: Final[str] = "watchlist"
+
+# Prefijo de clave de cache por ecosistema (ADR-8): la clave pasa a
+# `f"{cache_prefix}:{host}{path}"` (mismo patron cerrado `pypi:`/`npm:` que OSV), de modo
+# que un blob de corpus de un ecosistema NO sea legible bajo la clave del otro, por
+# construccion (R8.2/NFR-Seg.3). Solo se prefija; el corpus depscope sigue siendo agnostico
+# de ecosistema, pero el VEREDICTO cacheado y su clave no colisionan entre ecosistemas.
+_CACHE_KEY_PREFIX_PYPI: Final[str] = "pypi"
+_CACHE_KEY_PREFIX_NPM: Final[str] = "npm"
 
 # Identificadores de fuente/licencia para la atribucion (R2.6/R7.2). Constantes: jamas
 # se reflejan crudos desde la respuesta de red.
@@ -69,6 +80,32 @@ _NAME_KEYS: Final[tuple[str, ...]] = ("name", "package")
 _SECONDS_PER_HOUR: Final[int] = 3600
 
 
+def _is_valid_pypi_watchlist_name(name: str) -> bool:
+    """True si `name` normalizado PEP 503 es charset-valido para el corpus PyPI.
+
+    Predicado propio (anti-envenenamiento, §2.5): `normalize_name` baja a minusculas y
+    colapsa separadores pero NO valida charset, asi que un nombre con CRLF/ANSI/unicode que
+    lo esquivara sobreviviria. Solo un nombre `^[a-z0-9-]+$` (`\\A...\\Z`) se admite; cualquier
+    otro se descarta AL LEER, antes de poder inyectar un falso `KNOWN_HALLUCINATION`.
+    """
+    return _WATCHLIST_NAME_RE.match(name) is not None
+
+
+# Tabla CERRADA de ecosistemas soportados (ADR-8, simetria con OSV §3.7): `ecosystem_id` ->
+# `(cache_prefix, normalizer, name_validator)`. El `cache_prefix` separa la cache por
+# ecosistema (clave `f"{prefix}:{host}{path}"`, namespace `watchlist`); el `normalizer` y el
+# `name_validator` se eligen por ecosistema (PyPI = PEP 503, charset `^[a-z0-9-]+$`; npm =
+# nucleo §3.4 que admite scoped `@scope/name`). El `ecosystem_id` proviene SIEMPRE del adapter
+# (registro cerrado), nunca del usuario: un id fuera de esta tabla es un error de programacion
+# ⇒ `ValueError` fail-closed (jamas se refleja un id arbitrario en la clave de cache, R8.2).
+_ECOSYSTEM_TABLE: Final[
+    dict[str, tuple[str, Callable[[str], str], Callable[[str], bool]]]
+] = {
+    "pypi": (_CACHE_KEY_PREFIX_PYPI, normalize_name, _is_valid_pypi_watchlist_name),
+    "npm": (_CACHE_KEY_PREFIX_NPM, _normalize_npm_name, _is_valid_npm_name),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class _Corpus:
     """Corpus de nombres alucinados ya validado: conjunto inmutable + atribucion saneada.
@@ -77,7 +114,7 @@ class _Corpus:
     normalizados y la fecha del corpus para construir los `ThreatIntelResult` por nombre.
     """
 
-    names: frozenset[str]  # nombres normalizados PEP 503, charset validado
+    names: frozenset[str]  # nombres normalizados por ecosistema, charset validado
     date: str | None  # fecha del corpus (atribucion, saneada) o None si ausente
 
 
@@ -98,19 +135,45 @@ class WatchlistSource:
     source_id: str = _SOURCE_ID
     """Identificador unico de la fuente (`'watchlist'`)."""
 
-    def __init__(self, config: Config, *, use_cache: bool = True) -> None:
-        """Inicializa la fuente: deriva el host/path del corpus y el allowlist efectivo.
+    def __init__(
+        self, config: Config, *, ecosystem_id: str = "pypi", use_cache: bool = True
+    ) -> None:
+        """Inicializa la fuente para `ecosystem_id`: host/path del corpus + cache namespaced.
 
         `extra_allowed_hosts` se fija a `{config.watchlist_host}` (validado por config como
         FQDN https del dominio cerrado depscope.dev). El `SecureHttpClient` revalida el host
         antes de admitirlo (defensa en profundidad, ADR-09): un host interno inyectado se
         rechazaria en construccion. No se persiste el corpus en memoria entre lotes: se carga
         por lote desde cache/red (la cache vigente evita la red).
+
+        `ecosystem_id` (default `"pypi"`, cero regresion) selecciona de una tabla CERRADA
+        (ADR-8) la tripleta `(cache_prefix, normalizer, name_validator)`: el `cache_prefix`
+        antepone `pypi:`/`npm:` a la clave de cache (`f"{prefix}:{host}{path}"`) para que un
+        blob de corpus de un ecosistema NO sea legible bajo la clave del otro (R8.2/NFR-Seg.3);
+        el `normalizer`/`name_validator` se eligen por ecosistema (PyPI = PEP 503; npm = nucleo
+        §3.4 que admite scoped `@scope/name`), de modo que un nombre scoped legitimo se normaliza
+        y puede matchear `KNOWN_HALLUCINATION`. Un id fuera de la tabla ⇒ `ValueError` fail-closed:
+        el id viene del adapter (registro cerrado), nunca del usuario, asi que un valor ajeno es
+        un bug, no entrada que debamos reflejar en la clave de cache.
         """
+        try:
+            cache_prefix, normalizer, name_validator = _ECOSYSTEM_TABLE[ecosystem_id]
+        except KeyError as exc:
+            disponibles = ", ".join(sorted(_ECOSYSTEM_TABLE))
+            raise ValueError(
+                f"ecosystem_id no soportado por WatchlistSource: {ecosystem_id!r}; "
+                f"disponibles: {disponibles}"
+            ) from exc
         self._config = config
+        self._ecosystem_id = ecosystem_id
+        self._cache_prefix = cache_prefix
+        self._normalizer = normalizer
+        self._name_validator = name_validator
         self.extra_allowed_hosts: frozenset[str] = frozenset({config.watchlist_host})
         self._url = f"https://{config.watchlist_host}{config.watchlist_source_path}"
-        self._cache_key = f"{config.watchlist_host}{config.watchlist_source_path}"
+        self._cache_key = (
+            f"{cache_prefix}:{config.watchlist_host}{config.watchlist_source_path}"
+        )
         self._ttl_segundos = config.watchlist_ttl_cache_horas * _SECONDS_PER_HOUR
         self._http = SecureHttpClient(extra_allowed_hosts=self.extra_allowed_hosts)
         self._cache = _build_cache(config, enabled=use_cache)
@@ -251,19 +314,22 @@ class WatchlistSource:
         return _Corpus(names=frozenset(valid), date=date)
 
     def _validated_name(self, item: Any) -> str | None:
-        """Extrae y valida UN nombre del corpus: normaliza PEP 503 + charset + longitud.
+        """Extrae y valida UN nombre del corpus: normaliza + charset + longitud por ecosistema.
 
-        Tolera item-string y item-objeto (`{"name"|"package": ...}`). Descarta (None) si el
-        tipo no es reconocible, el nombre supera `nombre_max_chars` o no pasa el charset
-        `^[a-z0-9-]+$` (anti-envenenamiento: CRLF/ANSI/unicode que sobreviva a normalize_name).
+        Tolera item-string y item-objeto (`{"name"|"package": ...}`). Normaliza con la regla
+        del ecosistema (`self._normalizer`: PyPI = PEP 503; npm = §3.4, preserva scoped) y valida
+        con su charset (`self._name_validator`: PyPI = `^[a-z0-9-]+$`; npm = nucleo §3.4 que admite
+        `@scope/name`). Descarta (None) si el tipo no es reconocible, el nombre supera
+        `nombre_max_chars` o no pasa el charset del ecosistema (anti-envenenamiento: CRLF/ANSI/
+        unicode que sobreviva a la normalizacion no inyecta un falso `KNOWN_HALLUCINATION`).
         """
         raw = _raw_name(item)
         if raw is None:
             return None
-        normalized = normalize_name(raw)
+        normalized = self._normalizer(raw)
         if len(normalized) > self._config.nombre_max_chars:
             return None  # nombre absurdamente largo ⇒ descartado (no se mide distancia)
-        return normalized if _WATCHLIST_NAME_RE.match(normalized) else None
+        return normalized if self._name_validator(normalized) else None
 
 
 def _extract_items(raw: dict[str, Any]) -> list[Any] | None:

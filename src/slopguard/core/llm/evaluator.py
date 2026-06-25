@@ -25,8 +25,20 @@ class LlmEvaluator(Protocol):
     proveedor = implementar este Protocol sin tocar capas/scoring/engine.
     """
 
-    def evaluate(self, name: str, context: HallucinationContext) -> LlmAssessment | None:
+    def evaluate(
+        self, name: str, context: HallucinationContext, ecosystem_id: str = "pypi"
+    ) -> LlmAssessment | None:
         """Clasifica `name` usando el `context` deterministico de las capas 0-2.
+
+        El `ecosystem_id` (``"pypi"``/``"npm"``) cruza la cadena hasta `build_prompt`
+        para emitir el texto del ecosistema correcto y sellar la clave/veredicto L4
+        por ecosistema (ADR-6, H4). El default ``"pypi"`` preserva el comportamiento
+        existente mientras el wiring del resolver/engine se cablea (H4-T32/T33).
+
+        Args:
+            name: Nombre normalizado del paquete a evaluar.
+            context: Contexto deterministico derivado de las capas 0-2.
+            ecosystem_id: Identificador del ecosistema (``"pypi"`` o ``"npm"``).
 
         Returns:
             `LlmAssessment` validado+saneado si el LLM respondio de forma utilizable;

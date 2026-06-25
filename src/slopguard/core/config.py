@@ -105,10 +105,10 @@ _VALID_LLM_HOSTS: frozenset[str] = frozenset({"api.anthropic.com"})
 _VALID_LLM_EFFORT: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 # Charset de rutas de API: solo caracteres URL seguros sin CRLF/espacios.
-_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+_PATH_RE = re.compile(r"\A/[A-Za-z0-9._~/-]*\Z")
 
 # Charset de un label DNS (LDH: letras, digitos, guion); rechaza todo lo demas.
-_FQDN_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_FQDN_LABEL_RE = re.compile(r"\A[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z")
 
 # Minimo de labels para considerar un FQDN valido (ej: "host.tld" = 2 labels).
 _FQDN_MIN_LABELS: int = 2

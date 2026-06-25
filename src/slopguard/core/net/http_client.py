@@ -50,8 +50,8 @@ _ALLOWED_SCHEME: Final[str] = "https"
 # Label LDH (letras/digitos/guion) de un FQDN; un host valido tiene >=2 labels y el
 # TLD no es puramente numerico (eso seria una IPv4 disfrazada). Charset acotado para
 # el predicado anti-SSRF `_is_valid_https_host` (§3.6).
-_HOST_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_NUMERIC_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]+$")
+_HOST_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_NUMERIC_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"\A[0-9]+\Z")
 # Un FQDN valido tiene al menos dominio + TLD (2 labels): nombres de un solo label
 # (intranet/`host`) se rechazan como no-FQDN (anti-SSRF a host interno, §3.6).
 _MIN_FQDN_LABELS: Final[int] = 2

@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from ..adapters.npm import _is_valid_npm_osv_name
 from ..cache.disk_cache import DiskCache
 from ..errors import NetworkUnverifiableError
 from ..models import Advisory
@@ -48,11 +49,11 @@ if TYPE_CHECKING:
 # Identificador estable de la fuente (clave de namespace de cache y atribucion).
 _SOURCE_ID: Final[str] = "osv"
 
-# Ecosistema OSV (capitalizacion exacta de la API; constante, NUNCA reflejada del
+# Ecosistema OSV PyPI (capitalizacion exacta de la API; constante, NUNCA reflejada del
 # usuario: el cuerpo solo lleva esta constante + el nombre validado por charset).
 _OSV_ECOSYSTEM: Final[str] = "PyPI"
 
-# Namespace de cache por-nombre (clave en disco = sha256("osv:pypi:{name}")).
+# Namespace de cache por-nombre (clave en disco = sha256("osv:{prefix}:{name}")).
 _CACHE_NAMESPACE: Final[str] = "osv"
 _CACHE_KEY_PREFIX: Final[str] = "pypi"
 
@@ -65,12 +66,37 @@ _ADVISORY_KIND: Final[str] = "malicious"
 
 # Charset PEP 503 normalizado acotado a 100 chars: un nombre que NO case se excluye
 # del POST (defensa en profundidad: `normalize_name` no valida charset, §3.2).
-_OSV_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
+_OSV_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?\Z")
+
+
+def _is_valid_osv_name(name: str) -> bool:
+    """True si el nombre normalizado PyPI es seguro para el body del POST (charset acotado).
+
+    Predicado propio (defensa en profundidad, §3.2): `normalize_name` colapsa separadores
+    y baja a minusculas pero NO valida charset, asi que un nombre con CRLF/ANSI/unicode que
+    esquivara el parser sobreviviria. Solo un nombre PEP 503 legitimo (`^[a-z0-9-]...$`,
+    <=100) viaja a OSV; cualquier otro se excluye y queda UNVERIFIABLE (nunca CLEAN).
+    """
+    return bool(_OSV_NAME_RE.match(name))
+
+
+# Tabla CERRADA de ecosistemas soportados (ADR-5, §3.7): `ecosystem_id` ->
+# `(osv_const, cache_prefix, name_validator)`. El `osv_const` es la capitalizacion exacta
+# que viaja en el cuerpo OSV; el `cache_prefix` separa la cache por ecosistema (clave
+# `f"{prefix}:{name}"`, namespace `osv`) y se persiste en el blob; el `name_validator` es el
+# predicado de charset pre-POST del ecosistema (PyPI=PEP 503; npm=nucleo §3.4, que admite
+# scoped). El `ecosystem_id` proviene SIEMPRE del adapter (registro cerrado), nunca del
+# usuario: un id fuera de esta tabla es un error de programacion ⇒ `ValueError` fail-closed
+# (jamas se refleja un id arbitrario en el cuerpo ni en la clave de cache, R8.1).
+_ECOSYSTEM_TABLE: Final[dict[str, tuple[str, str, Callable[[str], bool]]]] = {
+    "pypi": (_OSV_ECOSYSTEM, _CACHE_KEY_PREFIX, _is_valid_osv_name),
+    "npm": ("npm", "npm", _is_valid_npm_osv_name),
+}
 
 # Prefijo y charset de un id de advisory malicioso (R1.2). Solo los `MAL-*` cuentan;
 # `GHSA-*`/`CVE-*`/`PYSEC-*` se ignoran (R1.3). El id se valida ANTES de construir la
 # URL: un id con ANSI/CRLF/charset raro nunca se refleja en una URL (RISK-H2-2).
-_MAL_ID_RE: Final[re.Pattern[str]] = re.compile(r"^MAL-[0-9A-Za-z-]+$")
+_MAL_ID_RE: Final[re.Pattern[str]] = re.compile(r"\AMAL-[0-9A-Za-z-]+\Z")
 # Cota dura de longitud del id (anti id inflado en una URL/cache).
 _MAL_ID_MAX_LEN: Final[int] = 128
 
@@ -108,15 +134,39 @@ class OsvSource:
 
     source_id: str = _SOURCE_ID
 
-    def __init__(self, config: Config, *, use_cache: bool = True) -> None:
-        """Inicializa la fuente OSV: cliente HTTP con el host OSV en el allowlist + cache.
+    def __init__(
+        self, config: Config, *, ecosystem_id: str = "pypi", use_cache: bool = True
+    ) -> None:
+        """Inicializa la fuente OSV para `ecosystem_id`: HTTP endurecido + cache namespaced.
 
         El `extra_allowed_hosts` se deriva de `config.osv_host` (ya validado por
         `config._validate_ranges` contra el dominio cerrado {api.osv.dev}, R5.2). El
         cliente HTTP revalida el host (`_is_valid_https_host`) en construccion: defensa
         en profundidad si un refactor de config dejara de validarlo (ADR-09).
+
+        `ecosystem_id` (default `"pypi"`, cero regresion) selecciona de una tabla CERRADA
+        (ADR-5/§3.7) la tripleta `(osv_const, cache_prefix, name_validator)` que gobierna
+        TODAS las rutas que dependen del ecosistema: el cuerpo del POST (`_build_body` ⇒
+        `self._osv_const`), la clave de cache (`_cache_key` ⇒ `self._cache_prefix`), el blob
+        persistido (`_to_blob`/`_validate_osv_blob` ⇒ `self._cache_prefix` en el campo
+        `ecosystem`) y el charset pre-POST (`self._name_validator`). Asi un id inyectado no
+        puede filtrar cuerpo/cache entre ecosistemas (R8.1/R8.2). Un id fuera de la tabla ⇒
+        `ValueError` fail-closed: el id viene del adapter (registro cerrado), nunca del
+        usuario, asi que un valor ajeno es un bug, no entrada que debamos reflejar.
         """
+        try:
+            osv_const, cache_prefix, name_validator = _ECOSYSTEM_TABLE[ecosystem_id]
+        except KeyError as exc:
+            disponibles = ", ".join(sorted(_ECOSYSTEM_TABLE))
+            raise ValueError(
+                f"ecosystem_id no soportado por OsvSource: {ecosystem_id!r}; "
+                f"disponibles: {disponibles}"
+            ) from exc
         self._config = config
+        self._ecosystem_id = ecosystem_id
+        self._osv_const = osv_const
+        self._cache_prefix = cache_prefix
+        self._name_validator = name_validator
         self.extra_allowed_hosts: frozenset[str] = frozenset({config.osv_host})
         self._http = SecureHttpClient(extra_allowed_hosts=self.extra_allowed_hosts)
         self._cache = _build_cache(config, enabled=use_cache)
@@ -137,7 +187,7 @@ class OsvSource:
             cached = self._cached_result(name)
             if cached is not None:
                 results[name] = cached
-            elif _is_valid_osv_name(name):
+            elif self._name_validator(name):
                 to_query.append(name)
             else:
                 results[name] = _unverifiable(name, _REASON_INVALID_NAME)
@@ -153,8 +203,8 @@ class OsvSource:
         """
         return self._cache.get_blob(
             _CACHE_NAMESPACE,
-            _cache_key(name),
-            lambda payload: _validate_osv_blob(payload, name),
+            self._cache_key(name),
+            lambda payload: self._validate_osv_blob(payload, name),
             ttl_segundos=self._config.osv_ttl_cache_horas * 3600,
         )
 
@@ -173,7 +223,9 @@ class OsvSource:
         resolved = _parse_batch_response(payload, names)
         for name, result in resolved.items():
             if result.state in _CACHEABLE_STATES:
-                self._cache.put_blob(_CACHE_NAMESPACE, _cache_key(name), _to_blob(result))
+                self._cache.put_blob(
+                    _CACHE_NAMESPACE, self._cache_key(name), self._to_blob(result)
+                )
         return resolved
 
     def _post_batch(self, names: list[str]) -> dict[str, object] | None:
@@ -183,7 +235,7 @@ class OsvSource:
         reintentos sobre fallos transitorios o si la respuesta fue un fallo permanente
         (4xx!=429, anomalia de seguridad). El caller mapea None ⇒ UNVERIFIABLE del lote.
         """
-        body = _build_body(names)
+        body = self._build_body(names)
         return self._retry_batch(lambda: self._http.post_json(
             self._query_url,
             body,
@@ -220,6 +272,84 @@ class OsvSource:
             if attempt >= max_attempts or not _sleep_within_budget(attempt - 1, deadline):
                 return None  # reintentos agotados o sin margen de backoff ⇒ UNVERIFIABLE
 
+    # ----------------------------------------------------------------------- #
+    # Rutas dependientes del ecosistema (ADR-5/§3.7): metodos que leen `self`,
+    # NUNCA las constantes de modulo, para que el `ecosystem_id` inyectado gobierne
+    # cuerpo/clave/blob/validador y no exista filtracion cruzada entre ecosistemas.
+    # ----------------------------------------------------------------------- #
+
+    def _build_body(self, names: list[str]) -> dict[str, object]:
+        """Arma el cuerpo del `querybatch`: solo `{ecosystem, name}` por nombre VALIDO (R1.8/R8.1).
+
+        El `ecosystem` es `self._osv_const` (constante de la tabla cerrada, derivada del
+        `ecosystem_id` del adapter, NUNCA reflejada del usuario) y `name` ya paso
+        `self._name_validator`. NUNCA viaja version/manifiesto/ruta (NFR-Priv.1/NFR-Seg.4).
+        El orden de `queries` es el de `names`, base del reensamblado posicional.
+        """
+        return {
+            "queries": [
+                {"package": {"ecosystem": self._osv_const, "name": name}} for name in names
+            ]
+        }
+
+    def _cache_key(self, name: str) -> str:
+        """Clave de cache por-nombre: `f"{self._cache_prefix}:{name}"` (R8.2).
+
+        El prefijo (`pypi:`/`npm:`) separa la cache por ecosistema bajo el namespace `osv`
+        (lo aporta `DiskCache`): un blob de un ecosistema no es legible como el otro por
+        construccion, ademas del rechazo explicito de `_validate_osv_blob`.
+        """
+        return f"{self._cache_prefix}:{name}"
+
+    def _to_blob(self, result: ThreatIntelResult) -> dict[str, object]:
+        """Serializa un `ThreatIntelResult` CLEAN/MALICIOUS al payload de cache (§2.5, R8.2).
+
+        Persiste `self._cache_prefix` en `ecosystem` (segunda capa de aislamiento: el
+        validador lo exige al leer). NO incluye la `url` del advisory: se RECONSTRUYE del id
+        al leer. `put_blob` sella `cache_schema_version`/`fetched_at`; aqui solo van los
+        campos de dominio (source/ecosystem/name/state/advisories).
+        """
+        return {
+            "source": _SOURCE_ID,
+            "ecosystem": self._cache_prefix,
+            "name": result.name,
+            "state": result.state.value,
+            "advisories": [
+                {"id": adv.id, "kind": adv.kind, "source": adv.source}
+                for adv in result.advisories
+            ],
+        }
+
+    def _validate_osv_blob(
+        self, payload: dict[str, Any], expected_name: str
+    ) -> ThreatIntelResult | None:
+        """Valida un blob de cache OSV (entrada NO confiable) y reconstruye el `ThreatIntelResult`.
+
+        Rechaza (⇒ None ⇒ miss) cualquier desviacion (§2.5): `source!="osv"`,
+        `ecosystem!=self._cache_prefix` (un blob de OTRO ecosistema NO se acepta — aislamiento
+        por validador ademas de por clave, R8.2/NFR-Seg.3), `name` distinto del esperado, o
+        `state` no cacheable. Compara contra `self._cache_prefix` (el inyectado), NO contra el
+        literal `_CACHE_KEY_PREFIX`: asi una corrida npm rechaza un blob `pypi` y viceversa.
+        Para `malicious`, reconstruye los `Advisory` con la MISMA logica de validacion de id +
+        URL reconstruida que la red (no se confia en la url del disco); si no queda ningun
+        advisory valido, el blob se rechaza (incoherente con `malicious`).
+        """
+        if payload.get("source") != _SOURCE_ID or payload.get("ecosystem") != self._cache_prefix:
+            return None
+        if payload.get("name") != expected_name:
+            return None
+        state_raw = payload.get("state")
+        if state_raw == MaliceState.CLEAN.value:
+            return _clean(expected_name)
+        if state_raw != MaliceState.MALICIOUS.value:
+            return None  # unverifiable u otro estado no debe estar en disco ⇒ miss
+        advisories = _extract_advisories(_blob_vulns(payload.get("advisories")))
+        if not advisories:
+            return None  # `malicious` sin advisory valido es incoherente ⇒ miss
+        return ThreatIntelResult(
+            name=expected_name, state=MaliceState.MALICIOUS, advisories=advisories
+        )
+
 
 def _sleep_within_budget(attempt: int, deadline: float) -> bool:
     """Espera el backoff del intento `attempt` (0.5s, 1s, 2s...) sin rebasar el deadline.
@@ -233,31 +363,6 @@ def _sleep_within_budget(attempt: int, deadline: float) -> bool:
         return False
     time.sleep(backoff)
     return True
-
-
-def _is_valid_osv_name(name: str) -> bool:
-    """True si el nombre normalizado es seguro para el body del POST (charset acotado).
-
-    Predicado propio (defensa en profundidad, §3.2): `normalize_name` colapsa separadores
-    y baja a minusculas pero NO valida charset, asi que un nombre con CRLF/ANSI/unicode que
-    esquivara el parser sobreviviria. Solo un nombre PEP 503 legitimo (`^[a-z0-9-]...$`,
-    <=100) viaja a OSV; cualquier otro se excluye y queda UNVERIFIABLE (nunca CLEAN).
-    """
-    return bool(_OSV_NAME_RE.match(name))
-
-
-def _build_body(names: list[str]) -> dict[str, object]:
-    """Arma el cuerpo del `querybatch`: solo `{ecosystem, name}` por nombre VALIDO (R1.8).
-
-    El `ecosystem` es la constante OSV `"PyPI"` (no reflejada del usuario) y `name` ya paso
-    `_is_valid_osv_name`. NUNCA viaja version/manifiesto/ruta (NFR-Priv.1/NFR-Seg.4). El
-    orden de `queries` es el de `names`, base del reensamblado posicional de la respuesta.
-    """
-    return {
-        "queries": [
-            {"package": {"ecosystem": _OSV_ECOSYSTEM, "name": name}} for name in names
-        ]
-    }
 
 
 def _parse_batch_response(
@@ -337,34 +442,6 @@ def _advisory_from_id(raw_id: object) -> Advisory | None:
     )
 
 
-def _validate_osv_blob(payload: dict[str, Any], expected_name: str) -> ThreatIntelResult | None:
-    """Valida un blob de cache OSV (entrada NO confiable) y reconstruye el `ThreatIntelResult`.
-
-    Rechaza (⇒ None ⇒ miss) cualquier desviacion (§2.5): `source!="osv"`,
-    `ecosystem!="pypi"`, `name` distinto del esperado (colision de hash/manipulacion), o
-    `state` no cacheable. Para `malicious`, reconstruye los `Advisory` con la MISMA logica
-    de validacion de id + URL reconstruida que la red (no se confia en la url del disco); cada
-    entrada persistida se revalida tambien por `kind=="malicious"` y `source=="osv"` (a la letra
-    de §2.5, ver `_blob_vulns`); si no queda ningun advisory valido, el blob se rechaza
-    (incoherente con `malicious`).
-    """
-    if payload.get("source") != _SOURCE_ID or payload.get("ecosystem") != _CACHE_KEY_PREFIX:
-        return None
-    if payload.get("name") != expected_name:
-        return None
-    state_raw = payload.get("state")
-    if state_raw == MaliceState.CLEAN.value:
-        return _clean(expected_name)
-    if state_raw != MaliceState.MALICIOUS.value:
-        return None  # unverifiable u otro estado no debe estar en disco ⇒ miss
-    advisories = _extract_advisories(_blob_vulns(payload.get("advisories")))
-    if not advisories:
-        return None  # `malicious` sin advisory valido es incoherente ⇒ miss
-    return ThreatIntelResult(
-        name=expected_name, state=MaliceState.MALICIOUS, advisories=advisories
-    )
-
-
 def _blob_vulns(raw_advisories: object) -> list[dict[str, object]]:
     """Adapta los `advisories` del blob a la forma `[{"id": ...}]` que espera `_extract_advisories`.
 
@@ -388,30 +465,6 @@ def _blob_vulns(raw_advisories: object) -> list[dict[str, object]]:
         and item.get("kind") == _ADVISORY_KIND
         and item.get("source") == _SOURCE_ID
     ]
-
-
-def _to_blob(result: ThreatIntelResult) -> dict[str, object]:
-    """Serializa un `ThreatIntelResult` CLEAN/MALICIOUS al payload de cache (§2.5).
-
-    NO incluye la `url` del advisory: se RECONSTRUYE del id al leer (no se confia en una url
-    persistida). `put_blob` sella `cache_schema_version`/`fetched_at`; aqui solo van los
-    campos de dominio (source/ecosystem/name/state/advisories).
-    """
-    return {
-        "source": _SOURCE_ID,
-        "ecosystem": _CACHE_KEY_PREFIX,
-        "name": result.name,
-        "state": result.state.value,
-        "advisories": [
-            {"id": adv.id, "kind": adv.kind, "source": adv.source}
-            for adv in result.advisories
-        ],
-    }
-
-
-def _cache_key(name: str) -> str:
-    """Clave de cache por-nombre: `"pypi:{name}"` (el namespace "osv" lo aporta `DiskCache`)."""
-    return f"{_CACHE_KEY_PREFIX}:{name}"
 
 
 def _clean(name: str) -> ThreatIntelResult:

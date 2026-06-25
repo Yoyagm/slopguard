@@ -347,12 +347,16 @@ def _local_l3_patches(port: int) -> Iterator[None]:
     orig_osv_init = osv_mod.OsvSource.__init__
     orig_watch_init = watchlist_mod.WatchlistSource.__init__
 
-    def osv_init(self: Any, config: Config, *, use_cache: bool = True) -> None:
-        orig_osv_init(self, config, use_cache=use_cache)
+    def osv_init(
+        self: Any, config: Config, *, ecosystem_id: str = "pypi", use_cache: bool = True
+    ) -> None:
+        orig_osv_init(self, config, ecosystem_id=ecosystem_id, use_cache=use_cache)
         self._query_url = osv_url
 
-    def watch_init(self: Any, config: Config, *, use_cache: bool = True) -> None:
-        orig_watch_init(self, config, use_cache=use_cache)
+    def watch_init(
+        self: Any, config: Config, *, ecosystem_id: str = "pypi", use_cache: bool = True
+    ) -> None:
+        orig_watch_init(self, config, ecosystem_id=ecosystem_id, use_cache=use_cache)
         self._url = watch_url
 
     with (

@@ -31,6 +31,7 @@ def get_threatintel_source(
     config: Config,
     *,
     use_cache: bool,
+    ecosystem_id: str = "pypi",
 ) -> ThreatIntelSource | None:
     """Devuelve la fuente compuesta activa, o None si Capa 3 esta desactivada.
 
@@ -40,10 +41,17 @@ def get_threatintel_source(
       WatchlistSource solo si `config.enable_watchlist = True` (R2.1, ADR-09).
 
     El parametro `use_cache` se propaga a todas las fuentes (--no-cache, R6.3).
+    El parametro `ecosystem_id` se propaga a `OsvSource` y `WatchlistSource` para
+    que seleccionen la constante OSV, el prefijo de cache y el charset correctos
+    (R8.1/R8.2/ADR-5/ADR-8). Default `"pypi"` garantiza cero regresion (R8.6).
     """
     if not config.enable_layer3:
         return None
-    sources: list[ThreatIntelSource] = [OsvSource(config, use_cache=use_cache)]
+    sources: list[ThreatIntelSource] = [
+        OsvSource(config, ecosystem_id=ecosystem_id, use_cache=use_cache)
+    ]
     if config.enable_watchlist:
-        sources.append(WatchlistSource(config, use_cache=use_cache))
+        sources.append(
+            WatchlistSource(config, ecosystem_id=ecosystem_id, use_cache=use_cache)
+        )
     return CompositeSource(tuple(sources))

@@ -1,9 +1,12 @@
-"""Adapter npm: nucleo de charset compartido + predicados de validez (C1, §3.4).
+"""Adapter npm: nucleo de charset compartido + predicados de validez + mapeo packument.
 
 Este modulo aloja el `NpmAdapter` (ecosystem_id "npm"). El Hito 4 lo construye por
-piezas: H4-T01 fija el **nucleo de charset npm** y los dos predicados de validez que
-de el derivan; tareas posteriores (normalize_name, fetch, mapeo de packument) lo
-amplian sin tocar este nucleo de seguridad.
+piezas:
+- H4-T01: nucleo de charset npm + predicados de validez.
+- H4-T02: normalize_name.
+- H4-T06: `_extract_metadata` (mapeo packument→PackageMetadata, ADR-1/§3.2).
+- H4-T07: fetch, fetch_attempt, cap de streaming, URL anti-traversal.
+- H4-T11: load_top_n_npm, integridad SHA-256 al arranque.
 
 Nucleo de charset (un solo punto de endurecimiento, §3.4). Dos predicados deben
 rechazar EXACTAMENTE la misma estructura peligrosa y solo diferir en el tope de
@@ -22,14 +25,26 @@ UNVERIFIABLE, **nunca** CLEAN, y no viaja a la red (ni al GET del registry ni al
 de OSV). El nombre validado ademas se url-encodea (`quote(name, safe='')`) antes de
 construir la URL del registry (anti path-traversal/SSRF, §4.1, H4-T07).
 
+Mapeo packument (H4-T06, ADR-1, §3.2): se solicita el packument completo
+(`Accept: application/json`), nunca el abreviado `install-v1` (omite time/repository/
+description/author/license/keywords y dejaria inertes las Capas 0/2). Toda la
+entrada del packument es NO confiable: campo ausente/tipo inesperado => flag False/None,
+nunca senal inventada (R4.4, fail-closed).
+
 Frontera de arquitectura (R10.1): este modulo SI puede usar net/cache/dataset; las
 capas y el scoring importan SOLO de `adapters.base`, nunca de aqui (import-linter).
 """
 
 from __future__ import annotations
 
+import datetime
 import re
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+from .base import PackageMetadata
+
+if TYPE_CHECKING:
+    from ..dataset.top_n import TopNDataset
 
 # Nucleo de charset npm: caracteres permitidos en UN segmento del nombre (§3.4). Solo
 # minusculas/digitos y `._~-`; ningun CRLF/ANSI/C0-C1/espacio/`%`/unicode/`:`/`/` puede
@@ -109,13 +124,135 @@ def _normalize_npm_name(raw: str) -> str:
     return stripped.lower()
 
 
-class NpmAdapter:
-    """Adapter del ecosistema npm: normalize_name (H4-T02).
+# ---------------------------------------------------------------------------
+# H4-T06: mapeo packument npm -> PackageMetadata (ADR-1, §3.2, R4.2/R4.4)
+# ---------------------------------------------------------------------------
 
-    H4-T02 implementa `normalize_name` (§3.4, R3.1/R3.2/R3.4). Los metodos
-    `fetch`/`fetch_attempt`/`load_top_n`/`get_downloads` se implementan en tareas
-    posteriores (H4-T06, H4-T07, H4-T11) que amplian esta clase sin tocar el nucleo
-    de charset definido por H4-T01.
+
+def _extract_first_release_epoch(payload: dict[str, object]) -> float | None:
+    """Deriva el epoch UTC de first_release via `time.created` (§3.2, R4.4).
+
+    `time` ausente o no-dict => None. `created` ausente o invalido => None.
+    Nunca inventa fecha (sin NEW_PACKAGE espurio).
+    """
+    time_block = payload.get("time")
+    if not isinstance(time_block, dict):
+        return None
+    return _parse_iso_to_epoch(time_block.get("created"))
+
+
+def _extract_metadata(
+    payload: dict[str, object],
+    name: str,
+    top_n: TopNDataset,
+) -> PackageMetadata:
+    """Mapea un packument npm a PackageMetadata normalizado (§3.2, ADR-1, R4.2/R4.4).
+
+    Toda la entrada es NO confiable: campo ausente/tipo inesperado => flag False/None,
+    nunca senal inventada. Se usa el nombre CONSULTADO (normalizado), NO `payload["name"]`
+    (que podria diferir o estar ausente). Packument completo obligatorio (ADR-1).
+    """
+    normalized = _normalize_npm_name(name)
+    first_release_epoch = _extract_first_release_epoch(payload)
+    versions = payload.get("versions")
+    releases_count = len(versions) if isinstance(versions, dict) else 0
+    keywords = payload.get("keywords")
+    return PackageMetadata(
+        name=normalized,
+        first_release_epoch=first_release_epoch,
+        releases_count=releases_count,
+        has_repo_url=_extract_repo_url(payload.get("repository")),
+        has_description=bool(_truthy_npm_str(payload.get("description"))),
+        has_author=_extract_author(payload.get("author")),
+        has_license=_extract_license(payload.get("license")),
+        has_classifiers=isinstance(keywords, list) and len(keywords) > 0,
+        in_top_n=normalized in top_n.members,
+    )
+
+
+def _parse_iso_to_epoch(raw: object) -> float | None:
+    """Parsea una fecha ISO-8601 (str) a epoch UTC. None si ausente o invalido.
+
+    Acepta sufijo 'Z' (UTC) y offsets '+HH:MM'. fromisoformat cubre Python 3.11+
+    con el reemplazo de 'Z'. Devuelve None ante cualquier ValueError/OverflowError
+    (campo ausente o malformado => no se inventa fecha, R4.4).
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        ts = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return ts.timestamp()
+    except (ValueError, OverflowError):
+        return None
+
+
+def _truthy_npm_str(value: object) -> str:
+    """Devuelve el string si no esta vacio, de lo contrario ''.
+
+    Mas simple que la variante de PyPI (que filtra 'UNKNOWN'): npm no tiene ese
+    convenio; cualquier string no vacio se acepta como senal de presencia.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _extract_repo_url(repository: object) -> bool:
+    """True si el campo `repository` del packument indica una URL http(s) (§3.2).
+
+    Dos formas validas segun la especificacion npm:
+    - dict con clave `url` cuyo valor es str que empieza por 'http'.
+    - string directo que empieza por 'http'.
+    Campo ausente/tipo inesperado/url no-http => False (fail-closed, R4.4).
+    """
+    if isinstance(repository, dict):
+        url = repository.get("url")
+        return isinstance(url, str) and url.startswith("http")
+    if isinstance(repository, str):
+        return repository.startswith("http")
+    return False
+
+
+def _extract_author(author: object) -> bool:
+    """True si el packument indica un autor no vacio (§3.2).
+
+    Dos formas validas segun la especificacion npm:
+    - str no vacio (forma corta: "Author Name <email>").
+    - dict con clave `name` cuyo valor es str no vacio (forma objeto).
+    Campo ausente/tipo inesperado/vacio => False (fail-closed, R4.4).
+    """
+    if isinstance(author, str):
+        return bool(author.strip())
+    if isinstance(author, dict):
+        name_val = author.get("name")
+        return isinstance(name_val, str) and bool(name_val.strip())
+    return False
+
+
+def _extract_license(license_field: object) -> bool:
+    """True si el packument indica una licencia (§3.2).
+
+    Dos formas validas segun la especificacion npm:
+    - str no vacio (SPDX directo: "MIT", "Apache-2.0", etc.).
+    - dict con clave `type` cuyo valor es str (forma objeto SPDX legacy).
+    Campo ausente/tipo inesperado/vacio => False (fail-closed, R4.4).
+    """
+    if isinstance(license_field, str):
+        return bool(license_field.strip())
+    if isinstance(license_field, dict):
+        type_val = license_field.get("type")
+        return isinstance(type_val, str) and bool(type_val.strip())
+    return False
+
+
+class NpmAdapter:
+    """Adapter del ecosistema npm: normalize_name (H4-T02) + mapeo packument (H4-T06).
+
+    H4-T02 implementa `normalize_name` (§3.4, R3.1/R3.2/R3.4).
+    H4-T06 introduce `_extract_metadata` (§3.2, ADR-1, R4.2/R4.4).
+    Los metodos `fetch`/`fetch_attempt`/`load_top_n`/`get_downloads` se implementan en
+    tareas posteriores (H4-T07, H4-T11) que amplian esta clase sin tocar el nucleo
+    de charset ni el mapeo de packument.
 
     Frontera de arquitectura (R10.1): este modulo SI puede usar net/cache/dataset;
     las capas y el scoring importan SOLO de `adapters.base`, nunca de aqui (import-linter).

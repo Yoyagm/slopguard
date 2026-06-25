@@ -86,7 +86,9 @@ class _FakeEvaluator:
         self.assessment = assessment
         self.calls = 0
 
-    def evaluate(self, name: str, context: object) -> LlmAssessment | None:
+    def evaluate(
+        self, name: str, context: object, ecosystem_id: str = "pypi"
+    ) -> LlmAssessment | None:
         self.calls += 1
         return self.assessment
 

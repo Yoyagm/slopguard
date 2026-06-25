@@ -97,11 +97,12 @@ def build_context(
     )
 
 
-def resolve_layer4(
+def resolve_layer4(  # noqa: PLR0913 (firma fijada en design §3.7: evaluator+cache+items+config+ecosystem_id+now)
     evaluator: LlmEvaluator,
     cache: DiskCache,
     items: Sequence[tuple[str, HallucinationContext]],
     config: Config,
+    ecosystem_id: str = "pypi",
     *,
     now: float | None = None,
 ) -> dict[str, LlmAssessment | None]:
@@ -110,14 +111,21 @@ def resolve_layer4(
     Para cada item: intenta cache (HIT ⇒ no consume presupuesto); MISS con presupuesto
     ⇒ llama al evaluador (cuenta una llamada de RED) y cachea solo si hay assessment
     valido; MISS sin presupuesto ⇒ `None` (abstencion por tope). Nunca cachea `None`.
+
+    `ecosystem_id` (`"pypi"`/`"npm"`, default `"pypi"` ⇒ cero regresion hasta el wiring
+    del engine en H4-T33) cruza la cadena hasta `evaluate(...)` (texto del prompt) y sella
+    el aislamiento L4 por ecosistema en DOS capas (ADR-6, simetria con OSV): (1) primer
+    componente de `_cache_key` ⇒ npm y PyPI del mismo nombre/contexto NUNCA colisionan;
+    (2) `_to_blob` persiste `ecosystem` y `_validate_blob` rechaza (⇒ miss) un blob de
+    ecosistema ajeno, asi el aislamiento no depende solo de la clave.
     """
     ttl_segundos = config.llm_ttl_cache_horas * _SECONDS_PER_HOUR
     resolved: dict[str, LlmAssessment | None] = {}
     network_calls = 0
     for name, context in items:
-        key = _cache_key(name, context, config)
+        key = _cache_key(name, context, config, ecosystem_id)
         cached = cache.get_blob(
-            _NAMESPACE, key, _validate_blob,
+            _NAMESPACE, key, lambda payload: _validate_blob(payload, ecosystem_id),
             ttl_segundos=ttl_segundos, schema_version=_SCHEMA, now=now,
         )
         if cached is not None:
@@ -126,10 +134,13 @@ def resolve_layer4(
         if network_calls >= config.llm_max_calls_por_corrida:
             resolved[name] = None  # tope de llamadas de red ⇒ abstencion (LLM_UNAVAILABLE)
             continue
-        assessment = evaluator.evaluate(name, context)
+        assessment = evaluator.evaluate(name, context, ecosystem_id)
         network_calls += 1
         if assessment is not None:
-            cache.put_blob(_NAMESPACE, key, _to_blob(assessment), schema_version=_SCHEMA, now=now)
+            cache.put_blob(
+                _NAMESPACE, key, _to_blob(assessment, ecosystem_id),
+                schema_version=_SCHEMA, now=now,
+            )
         resolved[name] = assessment
     return resolved
 
@@ -149,11 +160,16 @@ def package_age_days(outcome: FetchOutcome | None, now_epoch: float) -> int | No
     return int(delta // _SECONDS_PER_DAY)
 
 
-def _cache_key(name: str, context: HallucinationContext, config: Config) -> str:
-    """Clave content-addressed: nombre + modelo + prompt_version + hash del contexto.
+def _cache_key(
+    name: str, context: HallucinationContext, config: Config, ecosystem_id: str
+) -> str:
+    """Clave content-addressed: ecosistema + nombre + modelo + prompt_version + hash de contexto.
 
     El `DiskCache` hashea `namespace:key`, asi que aqui basta una cadena determinista.
-    Incluir modelo y `prompt_version` invalida la entrada si cualquiera cambia (R6.4).
+    `ecosystem_id` es el PRIMER componente (Nota A, ADR-6 pto 4): npm y PyPI del mismo
+    nombre/contexto/modelo NUNCA colisionan. Incluir modelo y `prompt_version` invalida la
+    entrada si cualquiera cambia (R6.4/R9.2). Forma exacta (separadores `|` literales):
+    `f"{ecosystem_id}|{name}|{config.llm_model}|{config.prompt_version}|{ctx_hash}"`.
     """
     repr_ctx = "|".join((
         str(context.existe),
@@ -165,12 +181,18 @@ def _cache_key(name: str, context: HallucinationContext, config: Config) -> str:
         ",".join(context.senales_blandas),
     ))
     digest = hashlib.sha256(repr_ctx.encode("utf-8")).hexdigest()
-    return f"{name}|{config.llm_model}|{config.prompt_version}|{digest}"
+    return f"{ecosystem_id}|{name}|{config.llm_model}|{config.prompt_version}|{digest}"
 
 
-def _to_blob(assessment: LlmAssessment) -> dict[str, Any]:
-    """Serializa el assessment al blob de cache (SOLO el veredicto, nunca el prompt/clave)."""
+def _to_blob(assessment: LlmAssessment, ecosystem_id: str) -> dict[str, Any]:
+    """Serializa el assessment al blob de cache (SOLO el veredicto, nunca el prompt/clave).
+
+    Persiste `ecosystem` (= `ecosystem_id` de la corrida): segunda capa de aislamiento
+    (simetria con OSV `_to_blob`, ADR-6 pto 5). `_validate_blob` exige que coincida al leer,
+    de modo que un blob de OTRO ecosistema no sea legible aunque la clave se malformara.
+    """
     return {
+        "ecosystem": ecosystem_id,
         "clasificacion": assessment.clasificacion.value,
         "confianza": assessment.confianza,
         "patron": assessment.patron,
@@ -180,12 +202,18 @@ def _to_blob(assessment: LlmAssessment) -> dict[str, Any]:
     }
 
 
-def _validate_blob(payload: dict[str, Any]) -> LlmAssessment | None:
+def _validate_blob(payload: dict[str, Any], ecosystem_id: str) -> LlmAssessment | None:
     """Reconstruye `LlmAssessment` desde el blob tratandolo como entrada NO confiable.
 
-    Valida clasificacion (enum), confianza (numero finito en [0,1], no bool) y los
-    strings. Cualquier desviacion ⇒ `None` (miss): la cache no inyecta datos invalidos.
+    RECHAZA (⇒ `None` ⇒ miss) un blob cuyo `ecosystem` no sea `ecosystem_id` (aislamiento
+    por VALIDADOR ademas de por clave, ADR-6 pto 5/NFR-Seg.3; simetria con `_validate_osv_blob`):
+    un blob `pypi` no se sirve a una lectura `npm` y viceversa aunque la clave se malformara.
+    Un blob sin `ecosystem` (pre-H4) tambien se rechaza ⇒ refetch (lo invalida ya el bump
+    `prompt_version` h4-v1). Valida clasificacion (enum), confianza (numero finito en [0,1],
+    no bool) y los strings. Cualquier desviacion ⇒ `None`: la cache no inyecta datos invalidos.
     """
+    if payload.get("ecosystem") != ecosystem_id:
+        return None
     clasificacion = _blob_clasificacion(payload.get("clasificacion"))
     confianza = _blob_confianza(payload.get("confianza"))
     if clasificacion is None or confianza is None:

@@ -273,7 +273,9 @@ def _scan(
         return _error_report(exc, adapter.ecosystem_id)
 
     found = _found_names(outcomes)  # R1.5: solo existentes van al batch de Capa 3.
-    source = get_threatintel_source(config, use_cache=use_cache)
+    source = get_threatintel_source(
+        config, use_cache=use_cache, ecosystem_id=adapter.ecosystem_id
+    )
     threat_intel = resolve_threatintel(source, found, config)
 
     now_epoch = time.time()  # NFR-Det.1: una sola lectura del reloj, tras el batch.

@@ -14,6 +14,12 @@ sin stacktrace crudo (R1.8).
 
 H4-T18: detect_ecosystem(path, override) — seleccion de ecosistema npm/pypi.
 Precedencia estricta: override → stdin-guard → auto-deteccion (R1.2/R1.3/R1.5).
+
+H4-T19: detect_and_parse/detect_and_parse_stdin — despacho de parser por ecosistema.
+Con ecosystem_id="npm" se despacha a parse_package_json (Forma A, §3.3); con
+ecosystem_id="pypi" (default) se preserva el comportamiento anterior intacto (R11).
+detect_and_parse_stdin con ecosystem_id="npm" parsea el texto como package.json,
+reutilizando el nucleo de T14 tras chequear max_manifest_bytes en bytes (§3.6).
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from ..config import Config
 from ..errors import InvalidConfigError, ManifestParseError
 from ..models import Dependency
 from ..normalize import sanitize_for_output
+from .package_json import _parse_package_json_content, parse_package_json
 from .pip_freeze import parse_pip_freeze, parse_pip_freeze_file
 from .pyproject_toml import parse_pyproject_toml
 from .requirements_txt import parse_requirements_txt_entry as parse_requirements_txt
@@ -91,55 +98,88 @@ def detect_and_parse(
     path: Path,
     config: Config,
     *,
+    ecosystem_id: str = "pypi",
     manifest_type: str | None = None,
 ) -> tuple[Dependency, ...]:
     """Detecta el tipo de manifiesto, parsea y dedup por nombre normalizado.
 
+    Con ecosystem_id="npm" (H4-T19, §3.6) despacha directamente a
+    parse_package_json (Forma A), ignorando manifest_type (no aplica a npm).
+    Con ecosystem_id="pypi" (default) preserva el comportamiento anterior:
+    deteccion por nombre + parsers Python (cero regresion, R11).
+    """
+    if ecosystem_id == "npm":
+        return _dedup(
+            parse_package_json(
+                path,
+                path.parent,  # ignorado por Forma A (package.json no tiene includes)
+                max_manifest_bytes=config.max_manifest_bytes,
+                max_deps=config.max_deps,
+                max_include_depth=config.max_include_depth,
+            )
+        )
+
+    return _dedup(_parse_pypi_manifest(path, config, manifest_type))
+
+
+def _parse_pypi_manifest(
+    path: Path,
+    config: Config,
+    manifest_type: str | None,
+) -> tuple[Dependency, ...]:
+    """Rama pypi de detect_and_parse: deteccion por nombre + parsers Python (R11).
+
     `manifest_type` es el override de --manifest-type; si es None se detecta
     automaticamente por nombre/extension.
 
-    Retorna un tuple de `Dependency` ya deduplicado. Tuple vacio = 0 deps.
-    Lanza `ManifestParseError` si el tipo es invalido, el archivo es ilegible
+    Retorna tuple de Dependency (sin deduplicar; la dedup la hace detect_and_parse).
+    Lanza ManifestParseError si el tipo es invalido, el archivo es ilegible
     o el formato es incorrecto.
     """
     resolved_type = _resolve_type(path, manifest_type)
 
     if resolved_type == "pyproject":
-        raw = parse_pyproject_toml(
+        return parse_pyproject_toml(
             path,
             origin=_safe_origin(path),
             max_manifest_bytes=config.max_manifest_bytes,
             max_deps=config.max_deps,
         )
-    elif resolved_type == "freeze":
-        raw = parse_pip_freeze_file(
+    if resolved_type == "freeze":
+        return parse_pip_freeze_file(
             path,
             origin=_safe_origin(path),
             max_manifest_bytes=config.max_manifest_bytes,
             max_deps=config.max_deps,
         )
-    else:
-        # requirements (default)
-        raw = parse_requirements_txt(
-            path,
-            origin=_safe_origin(path),
-            max_manifest_bytes=config.max_manifest_bytes,
-            max_deps=config.max_deps,
-            max_include_depth=config.max_include_depth,
-            project_root=path.parent,
-        )
-
-    return _dedup(raw)
+    # requirements (default)
+    return parse_requirements_txt(
+        path,
+        origin=_safe_origin(path),
+        max_manifest_bytes=config.max_manifest_bytes,
+        max_deps=config.max_deps,
+        max_include_depth=config.max_include_depth,
+        project_root=path.parent,
+    )
 
 
 def detect_and_parse_stdin(
     text: str,
     config: Config,
+    *,
+    ecosystem_id: str = "pypi",
 ) -> tuple[Dependency, ...]:
-    """Parsea texto de stdin (formato pip freeze) (R1.3).
+    """Parsea texto de stdin segun el ecosistema (H4-T19, §3.6).
+
+    Con ecosystem_id="npm" el texto se interpreta como package.json en memoria,
+    reutilizando el nucleo de T14 (_parse_package_json_content) tras chequear
+    max_manifest_bytes en bytes. origin="stdin" saneado.
+
+    Con ecosystem_id="pypi" (default) preserva el comportamiento anterior:
+    formato pip-freeze (cero regresion, R11).
 
     Chequea max_manifest_bytes sobre la longitud en bytes del texto antes de
-    parsearlo completo (R1.9).
+    parsearlo completo (R1.9/R2.2).
     """
     byte_size = len(text.encode("utf-8"))
     if byte_size > config.max_manifest_bytes:
@@ -147,6 +187,15 @@ def detect_and_parse_stdin(
             f"entrada stdin supera el tamano maximo ({config.max_manifest_bytes} bytes)"
         )
 
+    if ecosystem_id == "npm":
+        deps = _parse_package_json_content(text, origin="stdin")
+        if len(deps) > config.max_deps:
+            raise ManifestParseError(
+                f"entrada stdin supera el maximo de {config.max_deps} dependencias"
+            )
+        return _dedup(deps)
+
+    # Rama pypi: pip-freeze como hoy (R11, cero regresion).
     raw = parse_pip_freeze(text, origin="stdin", max_deps=config.max_deps)
     return _dedup(raw)
 

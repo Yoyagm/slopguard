@@ -15,11 +15,20 @@ Reglas de guarda (aplicadas en orden):
 El candidato primario se elige por: menor DL -> mayor JW -> nombre ascendente
 (desempate determinista, R3.4).
 
+`candidate_filter` (H4-T23, ADR-4, R6.2): predicado agnostico `(consultado, candidato)
+-> elegible` inyectado por el engine desde el adapter. Se aplica al iterar candidatos en
+AMBOS prefiltros (banda DL por longitud Y banda JW por primer caracter) ANTES de medir
+distancia; `None` = identidad (todos elegibles). La capa permanece agnostica de ecosistema:
+NO conoce scopes npm ni ramifica por ecosistema; solo invoca el predicado (verificable por
+inspeccion). El adapter npm provee el filtro "mismo scope" como dato; PyPI provee `None`.
+
 Sin red, sin adapters concretos, sin CLI. Determinista (R3.7).
 Importa SOLO de: similarity, dataset.top_n, models, config.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from slopguard.core.config import Config
 from slopguard.core.dataset.top_n import TopNDataset
@@ -43,15 +52,25 @@ _DL_NOT_COMPUTED = -1
 # Sustituto de "infinito" para candidatos capturados solo por JW en el desempate.
 _DL_FALLBACK = 9999
 
+# Predicado de elegibilidad de candidato `(consultado, candidato) -> elegible` (ADR-4).
+CandidateFilter = Callable[[str, str], bool]
+
 
 def evaluate(
     name: str,
     dataset: TopNDataset,
     config: Config,
+    *,
+    candidate_filter: CandidateFilter | None = None,
 ) -> list[LayerSignal]:
     """Evalua la Capa 1 para `name` contra el dataset top-N.
 
     Devuelve una lista con 0 o 1 senales. Sin red, determinista.
+
+    `candidate_filter` (ADR-4, R6.2): predicado agnostico `(consultado, candidato) ->
+    elegible` inyectado por el engine; `None` = identidad (todos elegibles). Se consulta
+    al iterar candidatos en AMBOS prefiltros ANTES de medir distancia (un candidato no
+    elegible jamas dispara senal). La capa no conoce su semantica (p.ej. "mismo scope" npm).
     """
     # Guarda 1: nombres muy cortos -> sin senal (evita falsos positivos, R3.5).
     if len(name) <= _MIN_NAME_LEN:
@@ -65,24 +84,39 @@ def evaluate(
     if name in dataset.members:
         return []
 
-    best = _find_best_candidate(name, dataset, config)
+    best = _find_best_candidate(name, dataset, config, candidate_filter)
     if best is None:
         return []
     return [_build_signal(best)]
+
+
+def _is_eligible(
+    name: str,
+    target: str,
+    candidate_filter: CandidateFilter | None,
+) -> bool:
+    """True si `target` es candidato elegible para `name` segun el filtro inyectado.
+
+    `None` = identidad (todo candidato elegible). El predicado se aplica en AMBOS
+    prefiltros (DL y JW) ANTES de medir distancia, de modo que un candidato descartado
+    (p.ej. otro scope npm) nunca llega a `damerau`/`jaro_winkler` ni dispara senal.
+    """
+    return candidate_filter is None or candidate_filter(name, target)
 
 
 def _find_best_candidate(
     name: str,
     dataset: TopNDataset,
     config: Config,
+    candidate_filter: CandidateFilter | None,
 ) -> _Candidate | None:
     """Busca el candidato mas cercano del top-N usando prefiltros de ADR-02.
 
     Combina resultados de DL (banda por longitud) y JW (banda por primer caracter).
     Devuelve None si ningun candidato supera los umbrales.
     """
-    dl_candidates = _dl_candidates(name, dataset, config)
-    jw_candidates = _jw_candidates(name, dataset, config)
+    dl_candidates = _dl_candidates(name, dataset, config, candidate_filter)
+    jw_candidates = _jw_candidates(name, dataset, config, candidate_filter)
 
     # Union de todos los candidatos que disparan alguna senal.
     # Por construccion, un mismo target NO puede aparecer en ambas listas:
@@ -108,14 +142,23 @@ def _dl_candidates(
     name: str,
     dataset: TopNDataset,
     config: Config,
+    candidate_filter: CandidateFilter | None,
 ) -> list[_Candidate]:
-    """Candidatos de DL dentro de la banda de longitud [L-dl_max, L+dl_max]."""
+    """Candidatos de DL dentro de la banda de longitud [L-dl_max, L+dl_max].
+
+    `candidate_filter` se aplica ANTES de medir DL (ADR-4, Nota B): el FP "mismo name,
+    distinto scope" entra por la banda de longitud, no solo por primer caracter, asi que
+    descartar el candidato aqui es imprescindible (un fix solo en `_jw_candidates` lo dejaria
+    pasar).
+    """
     length = len(name)
     result: list[_Candidate] = []
     for band_len in range(length - config.dl_max, length + config.dl_max + 1):
         if band_len <= 0:
             continue
         for target in dataset.by_length.get(band_len, ()):
+            if not _is_eligible(name, target, candidate_filter):
+                continue
             dist = damerau_levenshtein_bounded(name, target, config.dl_max)
             if 1 <= dist <= config.dl_max:
                 result.append(_Candidate(target=target, dl=dist, jw=jaro_winkler(name, target)))
@@ -126,11 +169,15 @@ def _jw_candidates(
     name: str,
     dataset: TopNDataset,
     config: Config,
+    candidate_filter: CandidateFilter | None,
 ) -> list[_Candidate]:
     """Candidatos de JW en el mismo primer caracter (prefiltro ADR-02).
 
     Solo se evaluan candidatos cuyo DL ya excede dl_max (para no duplicar los
     que ya detecto la banda DL). Emite senal solo si JW >= jw_min.
+
+    `candidate_filter` se aplica ANTES de medir JW (ADR-4): cierra el FP scoped tambien
+    por la banda de primer caracter (`@` agrupa todos los scoped juntos).
     """
     if not name:  # pragma: no cover  # guarda defensiva; evaluate() garantiza len>3
         return []
@@ -138,6 +185,8 @@ def _jw_candidates(
     for target in dataset.by_first_char.get(name[0], ()):
         if target == name:  # pragma: no cover  # guarda defensiva; miembros en members siempre
             continue  # ya cubierto por la guarda de match exacto
+        if not _is_eligible(name, target, candidate_filter):
+            continue
         dist = damerau_levenshtein_bounded(name, target, config.dl_max)
         # Si DL ya capturo este candidato (dist <= dl_max), no lo duplicamos.
         if dist <= config.dl_max:

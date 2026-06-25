@@ -49,7 +49,7 @@ from ..dataset.top_n import NPM_JSON, NPM_SHA256, TopNDataset, load_top_n
 from ..errors import NetworkUnverifiableError
 from ..models import ErrorCategory
 from ..net.http_client import SecureHttpClient
-from .base import FetchOutcome, FetchState, PackageMetadata
+from .base import CandidateFilter, FetchOutcome, FetchState, PackageMetadata
 from .concurrent import FetchAttempt
 
 # Nucleo de charset npm: caracteres permitidos en UN segmento del nombre (§3.4). Solo
@@ -160,6 +160,38 @@ def _is_valid_npm_osv_name(name: str) -> bool:
     (R8.3, defensa en profundidad anti-reflejo).
     """
     return _is_valid_npm_structure(name, max_len=_NPM_OSV_NAME_MAX_LEN)
+
+
+def _npm_scope(name: str) -> str | None:
+    """Devuelve el scope `@scope` de un nombre scoped, o None si no es scoped (§3.4).
+
+    Un nombre scoped es `@<scope>/<name>` con EXACTAMENTE un `/`; el scope es el prefijo
+    antes del primer `/` (incluido el `@`). Un nombre simple no tiene scope (None).
+    """
+    if not name.startswith("@") or "/" not in name:
+        return None
+    return name.partition("/")[0]
+
+
+def _same_scope_candidate(queried: str, candidate: str) -> bool:
+    """Filtro de candidatos npm "mismo scope" (ADR-4, R6.2), dato agnostico para Capa 1.
+
+    Un candidato es elegible solo si comparte scope con el nombre consultado: dos scoped
+    son elegibles entre si sii su `@scope` coincide; dos no-scoped son elegibles entre si;
+    un scoped y un no-scoped NUNCA son candidatos (namespaces distintos). Asi `@scopeA/name`
+    vs `@scopeB/name` (mismo name, scope distinto) se descarta ANTES de medir distancia,
+    mientras `@scope/lodahs` vs `@scope/lodash` (mismo scope, typo) si compite.
+
+    Este predicado vive en el adapter (conoce la sintaxis de scope npm); la Capa 1 solo lo
+    invoca como `Callable[[str, str], bool]` sin conocer su semantica (sin lógica de
+    ecosistema en la capa pura, R6.3).
+
+    Precondicion: opera sobre nombres ya ESTRUCTURALMENTE validos (un solo `/`, sin segmentos
+    `.`/`..`), garantizado aguas arriba por `_is_valid_npm_name` (fetch) y por la construccion
+    del corpus de Capa 1 con `_normalize_npm_name`. No es un validador: ante un nombre
+    malformado el resultado seria estructuralmente correcto pero semanticamente accidental.
+    """
+    return _npm_scope(queried) == _npm_scope(candidate)
 
 
 def _normalize_npm_name(raw: str) -> str:
@@ -413,6 +445,16 @@ class NpmAdapter:
         rehash por dependencia). El checksum SHA-256 ya se valido alli (fail-closed, R5.2).
         """
         return self._top_n
+
+    @property
+    def candidate_filter(self) -> CandidateFilter:
+        """Filtro de candidatos de Capa 1 "mismo scope" (ADR-4, R6.2), dato agnostico.
+
+        El engine lo inyecta en `layer1_similarity.evaluate` por el mismo canal que el corpus;
+        la capa pura solo lo invoca, sin conocer scopes (R6.3). Cierra el FP "mismo name,
+        distinto scope" en AMBOS prefiltros (DL banda de longitud Y JW por primer caracter).
+        """
+        return _same_scope_candidate
 
     def get_downloads(self, name: str) -> None:
         """Hook reservado. Retorna None siempre (R4.4); la ausencia NO es senal de riesgo."""

@@ -39,6 +39,7 @@ import slopguard.core.adapters.pypi as pypi_mod
 import slopguard.core.net.http_client as http_mod
 from slopguard.core.adapters.base import FetchOutcome, FetchState
 from slopguard.core.adapters.concurrent import RetryableAdapter, fetch_many
+from slopguard.core.adapters.npm import NpmAdapter
 from slopguard.core.adapters.pypi import PypiAdapter
 from slopguard.core.adapters.registry import get_adapter
 from slopguard.core.config import Config
@@ -445,10 +446,17 @@ def test_factory_default_es_pypi() -> None:
     assert isinstance(get_adapter(use_cache=False), PypiAdapter)
 
 
+def test_factory_npm_retorna_adapter() -> None:
+    """get_adapter('npm') retorna un NpmAdapter listo para usar (R1.1, H4-T13)."""
+    adapter = get_adapter("npm", use_cache=False)
+    assert isinstance(adapter, NpmAdapter)
+    assert adapter.ecosystem_id == "npm"
+
+
 def test_factory_ecosistema_desconocido_lanza() -> None:
-    """Un ecosystem_id no soportado lanza ValueError, nunca un adapter sin contrato."""
+    """Un ecosystem_id no soportado lanza ValueError listando los disponibles (R1.4)."""
     with pytest.raises(ValueError, match="no soportado"):
-        get_adapter("npm", use_cache=False)
+        get_adapter("cargo", use_cache=False)
 
 
 # ---------------------------------------------------------------------------

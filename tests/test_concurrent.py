@@ -87,6 +87,10 @@ class _ScriptedAdapter:
     def load_top_n(self) -> TopNDataset:  # pragma: no cover - no usado aqui
         raise NotImplementedError
 
+    @property
+    def candidate_filter(self) -> None:  # pragma: no cover - no usado en fetch_many
+        return None
+
     def get_downloads(self, name: str) -> None:  # pragma: no cover - hook reservado
         return None
 
@@ -113,6 +117,10 @@ class _PlainAdapter:
 
     def load_top_n(self) -> TopNDataset:  # pragma: no cover - no usado aqui
         raise NotImplementedError
+
+    @property
+    def candidate_filter(self) -> None:  # pragma: no cover - no usado en fetch_many
+        return None
 
     def get_downloads(self, name: str) -> None:  # pragma: no cover - hook reservado
         return None
@@ -227,6 +235,10 @@ def test_paralelismo_respeta_concurrencia_max() -> None:
 
         def load_top_n(self) -> TopNDataset:  # pragma: no cover
             raise NotImplementedError
+
+        @property
+        def candidate_filter(self) -> None:  # pragma: no cover - no usado en fetch_many
+            return None
 
         def get_downloads(self, name: str) -> None:  # pragma: no cover
             return None

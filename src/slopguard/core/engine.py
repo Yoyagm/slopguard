@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from slopguard import __version__ as _TOOL_VERSION
-from slopguard.core.adapters.base import FetchOutcome, FetchState
+from slopguard.core.adapters.base import CandidateFilter, FetchOutcome, FetchState
 from slopguard.core.adapters.concurrent import fetch_many
 from slopguard.core.adapters.registry import get_adapter
 from slopguard.core.config import Config
@@ -80,6 +80,7 @@ from slopguard.core.threatintel.registry import get_threatintel_source
 from slopguard.core.threatintel.resolver import resolve_threatintel
 
 if TYPE_CHECKING:
+    from slopguard.core.adapters.npm import NpmAdapter
     from slopguard.core.adapters.pypi import PypiAdapter
     from slopguard.core.dataset.top_n import TopNDataset
 
@@ -124,6 +125,11 @@ class _ScanContext:
     `ecosystem_id` (H4-T33, ADR-6 pto 6): propagado desde `adapter.ecosystem_id` para
     que `_apply_layer4` lo reenvie a `resolve_layer4`/`evaluate` y selle la clave L4
     por ecosistema (aislamiento npm/PyPI, NFR-Seg.3).
+
+    `candidate_filter` (H4-T23, ADR-4, R6.2): predicado agnostico provisto por
+    `adapter.candidate_filter` que el engine pasa a `layer1_similarity.evaluate` por el
+    mismo canal que el corpus; `None` (PyPI) = identidad. La Capa 1 lo invoca sin conocer
+    su semantica (sin ramificacion por ecosistema en la capa pura, R6.3).
     """
 
     config: Config
@@ -131,6 +137,7 @@ class _ScanContext:
     top_n: TopNDataset
     threat_intel: dict[str, ThreatIntelResult]
     ecosystem_id: str = "pypi"
+    candidate_filter: CandidateFilter | None = None
 
 
 def scan_manifest(
@@ -213,7 +220,7 @@ def scan_dependencies(
 
 
 def _normalize_and_dedup(
-    adapter: PypiAdapter,
+    adapter: PypiAdapter | NpmAdapter,
     deps: Sequence[Dependency],
 ) -> tuple[Dependency, ...]:
     """Normaliza el nombre (PEP 503) y deduplica preservando el primer registro.
@@ -250,7 +257,7 @@ def _rename(dep: Dependency, name: str) -> Dependency:
 def _scan(
     deps: tuple[Dependency, ...],
     config: Config,
-    adapter: PypiAdapter,
+    adapter: PypiAdapter | NpmAdapter,
     *,
     use_cache: bool,
 ) -> ScanReport:
@@ -290,6 +297,7 @@ def _scan(
         top_n=adapter.load_top_n(),
         threat_intel=threat_intel,
         ecosystem_id=adapter.ecosystem_id,  # H4-T33: sella la clave L4 por ecosistema
+        candidate_filter=adapter.candidate_filter,  # H4-T23: filtro scoped a Capa 1 (ADR-4)
     )
     results = tuple(
         _evaluate_dependency(dep, outcomes.get(dep.name), ctx) for dep in deps
@@ -442,7 +450,11 @@ def _collect_signals(
     config = ctx.config
     signals: list[LayerSignal] = []
     signals.extend(layer0_existence.evaluate(outcome, config, now_epoch=ctx.now_epoch))
-    signals.extend(layer1_similarity.evaluate(name, ctx.top_n, config))
+    signals.extend(
+        layer1_similarity.evaluate(
+            name, ctx.top_n, config, candidate_filter=ctx.candidate_filter
+        )
+    )
     signals.extend(layer2_metadata.evaluate(outcome, config))
     layer3_result = _threat_intel_for(name, outcome, ctx.threat_intel)
     if layer3_result is not None:

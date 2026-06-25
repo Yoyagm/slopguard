@@ -132,6 +132,10 @@ class _StubAdapter:
     def load_top_n(self) -> TopNDataset:
         return self._top_n
 
+    @property
+    def candidate_filter(self) -> None:  # H4-T23: PyPI = filtro identidad (ADR-4).
+        return None
+
     def get_downloads(self, name: str) -> None:  # pragma: no cover - hook reservado
         return None
 
@@ -158,6 +162,10 @@ class _RaisingAdapter:
 
     def load_top_n(self) -> TopNDataset:  # pragma: no cover - no se llega
         return self._top_n
+
+    @property
+    def candidate_filter(self) -> None:  # pragma: no cover - fetch lanza antes de Capa 1
+        return None
 
     def get_downloads(self, name: str) -> None:  # pragma: no cover - hook reservado
         return None

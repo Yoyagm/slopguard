@@ -117,6 +117,10 @@ class _StubAdapter:
     def load_top_n(self) -> TopNDataset:
         return self._top_n
 
+    @property
+    def candidate_filter(self) -> None:  # H4-T23: PyPI = filtro identidad (ADR-4).
+        return None
+
     def get_downloads(self, name: str) -> None:  # pragma: no cover
         return None
 

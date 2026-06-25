@@ -8,6 +8,7 @@ Protocol, sin tocar capas ni scoring.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
@@ -16,6 +17,11 @@ from ..models import ErrorCategory
 
 if TYPE_CHECKING:
     from ..dataset.top_n import TopNDataset
+
+# Predicado de elegibilidad de candidato de Capa 1: `(consultado, candidato) -> elegible`
+# (ADR-4, R6.2). El adapter lo expone como DATO agnostico; la capa pura solo lo invoca,
+# sin conocer su semantica (p.ej. "mismo scope" npm). `None` = identidad (todos elegibles).
+CandidateFilter = Callable[[str, str], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +83,16 @@ class EcosystemAdapter(Protocol):
         """Carga el dataset embebido verificando su checksum.
 
         Aborta (DatasetIntegrityError) si falta o esta corrupto (R3.9).
+        """
+        ...
+
+    @property
+    def candidate_filter(self) -> CandidateFilter | None:
+        """Filtro de candidatos de Capa 1, agnostico (ADR-4, R6.2); `None` = identidad.
+
+        El engine lo inyecta en `layer1_similarity.evaluate` por el mismo canal que el
+        corpus. PyPI devuelve `None` (sin scopes); npm devuelve "mismo scope para scoped".
+        La capa pura solo lo invoca, sin conocer su semantica (sin `if ecosystem` en la capa).
         """
         ...
 

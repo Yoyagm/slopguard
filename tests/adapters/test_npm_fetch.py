@@ -532,6 +532,35 @@ def test_safe_json_loads_acepta_numeros_finitos() -> None:
     assert parsed == {"a": 1, "b": 2.5}
 
 
+@pytest.mark.parametrize(
+    "nonfinite_body",
+    [
+        b'{"name": "x", "versions": {}, "confidence": NaN}',
+        b'{"name": "x", "versions": {}, "weight": Infinity}',
+        b'{"name": "x", "versions": {}, "weight": -Infinity}',
+    ],
+)
+def test_fetch_rechaza_no_finitos_via_transporte_real(
+    monkeypatch: pytest.MonkeyPatch, nonfinite_body: bytes
+) -> None:
+    """El FETCH real (no `safe_json` aislado) rechaza NaN/Infinity -> UNVERIFIABLE (H4-T40).
+
+    Regresion del hueco de wiring detectado en la revision de seguridad de la Ola 6: el
+    test directo de `safe_json_loads(reject_nonfinite=True)` daba cobertura FALSA-POSITIVA
+    (probaba la capacidad, no que el fetch la use). La cadena real `get_json ->
+    _parse_json_object -> safe_json_loads` parseaba con `reject_nonfinite=False`, asi que un
+    packument con un no-finito se ACEPTABA (FOUND) en contra de design L510. Este test baja
+    al transporte REAL (solo mockea `_opener.open`): un cuerpo no finito debe degradar a
+    UNVERIFIABLE permanente, jamas FOUND con metadata (fail-closed, R4.3).
+    """
+    adapter, _response = _adapter_with_raw_body(monkeypatch, nonfinite_body)
+
+    attempt = adapter.fetch_attempt("x")
+
+    assert attempt.outcome.state is FetchState.UNVERIFIABLE
+    assert attempt.outcome.metadata is None  # nunca metadata derivada de un cuerpo no finito
+
+
 # ---- Cap a mitad de stream end-to-end via el SecureHttpClient REAL (§7.3) ----
 
 

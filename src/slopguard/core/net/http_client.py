@@ -379,10 +379,14 @@ def _is_transient_http_status(code: int) -> bool:
 def _parse_json_object(body: bytes, max_json_depth: int) -> dict[str, object]:
     """Parsea `body` con `safe_json_loads` y exige que el top-level sea un objeto JSON.
 
-    Reusado por `get_json` y `post_json`. Cualquier no-objeto (lista, escalar) o anomalia
-    de profundidad/parseo => `NetworkUnverifiableError` (sin exponer el payload, NFR-Seg.4).
+    Reusado por `get_json` y `post_json`. La respuesta de red es entrada NO confiable:
+    se rechazan constantes no finitas (`NaN`/`Infinity`/`-Infinity`) ademas del anidamiento
+    patologico (design L510: «safe_json estricto, sin NaN/Infinity»). Un numero no finito
+    evadiria chequeos de rango (`NaN<0` y `NaN>1` son ambos False) -> fail-open silencioso.
+    Cualquier no-objeto (lista, escalar) o anomalia de profundidad/parseo =>
+    `NetworkUnverifiableError` (sin exponer el payload, NFR-Seg.4).
     """
-    parsed = safe_json_loads(body, max_json_depth)
+    parsed = safe_json_loads(body, max_json_depth, reject_nonfinite=True)
     if not isinstance(parsed, dict):
         raise NetworkUnverifiableError("la respuesta JSON no es un objeto")
     return parsed

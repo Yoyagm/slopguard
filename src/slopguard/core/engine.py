@@ -164,7 +164,9 @@ def scan_manifest(
     """
     try:
         adapter = get_adapter(ecosystem_id, config=config, use_cache=use_cache)
-        deps = detect_and_parse(Path(path), config, manifest_type=manifest_type)
+        deps = detect_and_parse(
+            Path(path), config, ecosystem_id=ecosystem_id, manifest_type=manifest_type
+        )
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
     return _scan(deps, config, adapter, use_cache=use_cache)
@@ -184,7 +186,7 @@ def scan_stdin(
     """
     try:
         adapter = get_adapter(ecosystem_id, config=config, use_cache=use_cache)
-        deps = detect_and_parse_stdin(text, config)
+        deps = detect_and_parse_stdin(text, config, ecosystem_id=ecosystem_id)
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
     return _scan(deps, config, adapter, use_cache=use_cache)

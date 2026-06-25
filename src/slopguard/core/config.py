@@ -31,8 +31,8 @@ _INT_FIELDS: frozenset[str] = frozenset({
     "umbral_block", "umbral_warn", "edad_minima_dias", "ttl_cache_horas",
     "concurrencia_max", "reintentos_red", "dl_max", "nombre_max_chars",
     "releases_min", "metadata_faltantes_min", "releases_populares", "c2_max_contrib",
-    "max_manifest_bytes", "max_deps", "max_response_bytes", "max_json_depth",
-    "max_include_depth",
+    "max_manifest_bytes", "max_deps", "max_response_bytes", "npm_max_response_bytes",
+    "max_json_depth", "max_include_depth",
     # Capa 3 (tabla R5):
     "osv_batch_max", "osv_ttl_cache_horas", "osv_reintentos",
     "watchlist_ttl_cache_horas",
@@ -76,8 +76,8 @@ _KNOWN_FIELDS: frozenset[str] = _INT_FIELDS | _FLOAT_FIELDS | _STR_FIELDS | _BOO
 _STRICTLY_POSITIVE: frozenset[str] = frozenset({
     "edad_minima_dias", "ttl_cache_horas", "concurrencia_max", "reintentos_red",
     "connect_timeout_s", "read_timeout_s", "timeout_total_por_dep_s",
-    "max_manifest_bytes", "max_deps", "max_response_bytes", "max_json_depth",
-    "max_include_depth", "releases_populares",
+    "max_manifest_bytes", "max_deps", "max_response_bytes", "npm_max_response_bytes",
+    "max_json_depth", "max_include_depth", "releases_populares",
     # Capa 3:
     "osv_batch_max", "osv_ttl_cache_horas", "osv_timeout_total_por_lote_s",
     "watchlist_ttl_cache_horas", "watchlist_timeout_total_s",
@@ -105,10 +105,10 @@ _VALID_LLM_HOSTS: frozenset[str] = frozenset({"api.anthropic.com"})
 _VALID_LLM_EFFORT: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 # Charset de rutas de API: solo caracteres URL seguros sin CRLF/espacios.
-_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+_PATH_RE = re.compile(r"\A/[A-Za-z0-9._~/-]*\Z")
 
 # Charset de un label DNS (LDH: letras, digitos, guion); rechaza todo lo demas.
-_FQDN_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_FQDN_LABEL_RE = re.compile(r"\A[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z")
 
 # Minimo de labels para considerar un FQDN valido (ej: "host.tld" = 2 labels).
 _FQDN_MIN_LABELS: int = 2
@@ -138,6 +138,8 @@ class Config:
     max_manifest_bytes: int = 5_000_000
     max_deps: int = 5000
     max_response_bytes: int = 10_000_000
+    # Cap npm-especifico (ADR-2, H4-T05): mayor que el de PyPI por el peso de los packuments.
+    npm_max_response_bytes: int = 25_000_000
     max_json_depth: int = 50
     max_include_depth: int = 10
 
@@ -163,7 +165,7 @@ class Config:
     llm_api_version: str = "2023-06-01"
     llm_model: str = "claude-opus-4-8"
     llm_effort: str = "low"
-    prompt_version: str = "h3-v1"
+    prompt_version: str = "h4-v1"
     gray_edad_max_dias: int = 365
     w_base_fabricacion: int = 55
     w_base_conflacion: int = 45

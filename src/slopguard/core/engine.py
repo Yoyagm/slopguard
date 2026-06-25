@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from slopguard import __version__ as _TOOL_VERSION
-from slopguard.core.adapters.base import FetchOutcome, FetchState
+from slopguard.core.adapters.base import CandidateFilter, FetchOutcome, FetchState
 from slopguard.core.adapters.concurrent import fetch_many
 from slopguard.core.adapters.registry import get_adapter
 from slopguard.core.config import Config
@@ -80,6 +80,7 @@ from slopguard.core.threatintel.registry import get_threatintel_source
 from slopguard.core.threatintel.resolver import resolve_threatintel
 
 if TYPE_CHECKING:
+    from slopguard.core.adapters.npm import NpmAdapter
     from slopguard.core.adapters.pypi import PypiAdapter
     from slopguard.core.dataset.top_n import TopNDataset
 
@@ -120,12 +121,23 @@ class _ScanContext:
     corrida, no por-dep: `now_epoch` se lee UNA vez (NFR-Det.1), `top_n` se carga una
     vez, y `threat_intel` es el resultado del batch de Capa 3 intercalado (§4.1). Frozen
     e inmutable: el bucle por-dep no puede mutar el entorno compartido.
+
+    `ecosystem_id` (H4-T33, ADR-6 pto 6): propagado desde `adapter.ecosystem_id` para
+    que `_apply_layer4` lo reenvie a `resolve_layer4`/`evaluate` y selle la clave L4
+    por ecosistema (aislamiento npm/PyPI, NFR-Seg.3).
+
+    `candidate_filter` (H4-T23, ADR-4, R6.2): predicado agnostico provisto por
+    `adapter.candidate_filter` que el engine pasa a `layer1_similarity.evaluate` por el
+    mismo canal que el corpus; `None` (PyPI) = identidad. La Capa 1 lo invoca sin conocer
+    su semantica (sin ramificacion por ecosistema en la capa pura, R6.3).
     """
 
     config: Config
     now_epoch: float
     top_n: TopNDataset
     threat_intel: dict[str, ThreatIntelResult]
+    ecosystem_id: str = "pypi"
+    candidate_filter: CandidateFilter | None = None
 
 
 def scan_manifest(
@@ -152,7 +164,9 @@ def scan_manifest(
     """
     try:
         adapter = get_adapter(ecosystem_id, config=config, use_cache=use_cache)
-        deps = detect_and_parse(Path(path), config, manifest_type=manifest_type)
+        deps = detect_and_parse(
+            Path(path), config, ecosystem_id=ecosystem_id, manifest_type=manifest_type
+        )
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
     return _scan(deps, config, adapter, use_cache=use_cache)
@@ -172,7 +186,7 @@ def scan_stdin(
     """
     try:
         adapter = get_adapter(ecosystem_id, config=config, use_cache=use_cache)
-        deps = detect_and_parse_stdin(text, config)
+        deps = detect_and_parse_stdin(text, config, ecosystem_id=ecosystem_id)
     except SlopGuardError as exc:
         return _error_report(exc, ecosystem_id)
     return _scan(deps, config, adapter, use_cache=use_cache)
@@ -208,7 +222,7 @@ def scan_dependencies(
 
 
 def _normalize_and_dedup(
-    adapter: PypiAdapter,
+    adapter: PypiAdapter | NpmAdapter,
     deps: Sequence[Dependency],
 ) -> tuple[Dependency, ...]:
     """Normaliza el nombre (PEP 503) y deduplica preservando el primer registro.
@@ -245,7 +259,7 @@ def _rename(dep: Dependency, name: str) -> Dependency:
 def _scan(
     deps: tuple[Dependency, ...],
     config: Config,
-    adapter: PypiAdapter,
+    adapter: PypiAdapter | NpmAdapter,
     *,
     use_cache: bool,
 ) -> ScanReport:
@@ -273,7 +287,9 @@ def _scan(
         return _error_report(exc, adapter.ecosystem_id)
 
     found = _found_names(outcomes)  # R1.5: solo existentes van al batch de Capa 3.
-    source = get_threatintel_source(config, use_cache=use_cache)
+    source = get_threatintel_source(
+        config, use_cache=use_cache, ecosystem_id=adapter.ecosystem_id
+    )
     threat_intel = resolve_threatintel(source, found, config)
 
     now_epoch = time.time()  # NFR-Det.1: una sola lectura del reloj, tras el batch.
@@ -282,6 +298,8 @@ def _scan(
         now_epoch=now_epoch,
         top_n=adapter.load_top_n(),
         threat_intel=threat_intel,
+        ecosystem_id=adapter.ecosystem_id,  # H4-T33: sella la clave L4 por ecosistema
+        candidate_filter=adapter.candidate_filter,  # H4-T23: filtro scoped a Capa 1 (ADR-4)
     )
     results = tuple(
         _evaluate_dependency(dep, outcomes.get(dep.name), ctx) for dep in deps
@@ -332,7 +350,9 @@ def _apply_layer4(
         (dep.name, build_context(dep.name, result, outcomes.get(dep.name), now_epoch=ctx.now_epoch))
         for dep, result in gray
     ]
-    assessments = resolve_layer4(evaluator, cache, items, ctx.config, now=ctx.now_epoch)
+    assessments = resolve_layer4(
+        evaluator, cache, items, ctx.config, ctx.ecosystem_id, now=ctx.now_epoch
+    )
     augmented = {
         dep.name: _augment_with_layer4(dep, result, assessments.get(dep.name), ctx.config)
         for dep, result in gray
@@ -432,7 +452,11 @@ def _collect_signals(
     config = ctx.config
     signals: list[LayerSignal] = []
     signals.extend(layer0_existence.evaluate(outcome, config, now_epoch=ctx.now_epoch))
-    signals.extend(layer1_similarity.evaluate(name, ctx.top_n, config))
+    signals.extend(
+        layer1_similarity.evaluate(
+            name, ctx.top_n, config, candidate_filter=ctx.candidate_filter
+        )
+    )
     signals.extend(layer2_metadata.evaluate(outcome, config))
     layer3_result = _threat_intel_for(name, outcome, ctx.threat_intel)
     if layer3_result is not None:

@@ -50,8 +50,8 @@ _ALLOWED_SCHEME: Final[str] = "https"
 # Label LDH (letras/digitos/guion) de un FQDN; un host valido tiene >=2 labels y el
 # TLD no es puramente numerico (eso seria una IPv4 disfrazada). Charset acotado para
 # el predicado anti-SSRF `_is_valid_https_host` (§3.6).
-_HOST_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_NUMERIC_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]+$")
+_HOST_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_NUMERIC_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"\A[0-9]+\Z")
 # Un FQDN valido tiene al menos dominio + TLD (2 labels): nombres de un solo label
 # (intranet/`host`) se rechazan como no-FQDN (anti-SSRF a host interno, §3.6).
 _MIN_FQDN_LABELS: Final[int] = 2
@@ -379,10 +379,14 @@ def _is_transient_http_status(code: int) -> bool:
 def _parse_json_object(body: bytes, max_json_depth: int) -> dict[str, object]:
     """Parsea `body` con `safe_json_loads` y exige que el top-level sea un objeto JSON.
 
-    Reusado por `get_json` y `post_json`. Cualquier no-objeto (lista, escalar) o anomalia
-    de profundidad/parseo => `NetworkUnverifiableError` (sin exponer el payload, NFR-Seg.4).
+    Reusado por `get_json` y `post_json`. La respuesta de red es entrada NO confiable:
+    se rechazan constantes no finitas (`NaN`/`Infinity`/`-Infinity`) ademas del anidamiento
+    patologico (design L510: «safe_json estricto, sin NaN/Infinity»). Un numero no finito
+    evadiria chequeos de rango (`NaN<0` y `NaN>1` son ambos False) -> fail-open silencioso.
+    Cualquier no-objeto (lista, escalar) o anomalia de profundidad/parseo =>
+    `NetworkUnverifiableError` (sin exponer el payload, NFR-Seg.4).
     """
-    parsed = safe_json_loads(body, max_json_depth)
+    parsed = safe_json_loads(body, max_json_depth, reject_nonfinite=True)
     if not isinstance(parsed, dict):
         raise NetworkUnverifiableError("la respuesta JSON no es un objeto")
     return parsed

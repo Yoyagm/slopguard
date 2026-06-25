@@ -6,6 +6,33 @@ y el versionado [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Seguridad
+
+- **Rechazo de constantes JSON no finitas en TODO fetch de registro/threat-intel**
+  (H4-T40, revisión de seguridad Ola 6). `_parse_json_object` (chokepoint de `get_json`/
+  `post_json`) ahora parsea con `reject_nonfinite=True`, de modo que `NaN`/`Infinity`/
+  `-Infinity` en una respuesta de PyPI, npm u OSV se rechazan y degradan a UNVERIFIABLE
+  (fail-closed), cumpliendo el contrato de diseño (design L510 «safe_json estricto, sin
+  NaN/Infinity»). Antes solo la ruta LLM los rechazaba; el fetch los aceptaba (un futuro
+  campo numérico podía provocar fail-open: `NaN<0` y `NaN>1` son ambos False). El test del
+  fetch npm que «cubría» esto llamaba a `safe_json_loads` aislado (cobertura falsa-positiva);
+  se reemplazó por uno integrado que ejercita el transporte real.
+
+### Deuda técnica conocida (Known issues)
+
+- **Texto "PyPI" en el `detail` de las señales L0/L2 para dependencias npm**
+  (decisión H4-T46, vía (a); ver `docs/adr/0001-texto-ecosistema-en-detail-capas-0-2.md`).
+  Las señales `NONEXISTENT` (`core/layers/layer0_existence.py`) y `LOW_VERIFIABILITY`
+  (`core/layers/layer2_metadata.py`) construyen su explicación con el literal "PyPI" dentro de
+  la **capa pura**; los renders solo sanean ese texto, no lo recomponen. Para una dependencia
+  **npm**, el texto humano y `signals[].detail` del JSON dirán "PyPI" (defecto **cosmético**).
+  El campo **estructural** `ecosystem` del reporte (JSON y cabecera) es **correcto** (`"npm"`),
+  por lo que R10.1 se cumple donde importa para integración/CI. Se acepta como deuda y **no** se
+  parametriza el texto por-ecosistema en la capa pura para no violar el principio rector
+  ("ningún texto/lógica por-ecosistema en `core.layers`/`core.scoring`"). Pago futuro: que el
+  ecosistema viaje como dato agnóstico en `FetchOutcome`/contexto (vía (b1) del ADR), en una
+  tarea aparte.
+
 ## [0.3.0] - 2026-06-24
 
 Tercer hito (**Hito 3**): **Capa 4 — superficie de alucinación con LLM**. Un evaluador LLM

@@ -210,12 +210,22 @@ def test_extract_advisories_vulns_no_lista_es_vacio() -> None:
 # --------------------------------------------------------------------------- #
 # NIVEL 1 - Validacion del blob de cache (§2.5): entrada NO confiable del disco.
 # --------------------------------------------------------------------------- #
+# Tras H4-T25, `_build_body`/`_cache_key`/`_to_blob`/`_validate_osv_blob` son METODOS que
+# leen `self` (no constantes de modulo), para que el `ecosystem_id` inyectado gobierne
+# cuerpo/clave/blob/validador sin filtracion cruzada (ADR-5). Se invocan sobre una instancia
+# PyPI (`_pypi_source`); el comportamiento PyPI es IDENTICO al previo (ecosystem "PyPI",
+# prefijo "pypi"): cero regresion, solo cambia la forma de invocacion (libre -> metodo).
+
+
+def _pypi_source(*, use_cache: bool = False) -> OsvSource:
+    """`OsvSource` PyPI sin red configurada, para ejercitar los metodos de blob/clave/cuerpo."""
+    return OsvSource(_config(), ecosystem_id="pypi", use_cache=use_cache)
 
 
 def test_to_blob_no_persiste_url_solo_id_kind_source() -> None:
     # La url NO se persiste (se reconstruye al leer); el blob lleva solo campos de dominio.
     result = osv._parse_batch_response({"results": [{"vulns": [{"id": "MAL-1"}]}]}, ["pkg"])["pkg"]
-    blob = osv._to_blob(result)
+    blob = _pypi_source()._to_blob(result)
     assert blob == {
         "source": "osv",
         "ecosystem": "pypi",
@@ -238,7 +248,7 @@ def _malicious_blob(name: str = "bioql") -> dict[str, object]:
 
 
 def test_validate_osv_blob_malicious_reconstruye_url_desde_id() -> None:
-    result = osv._validate_osv_blob(_malicious_blob(), "bioql")
+    result = _pypi_source()._validate_osv_blob(_malicious_blob(), "bioql")
     assert result is not None
     assert result.state is MaliceState.MALICIOUS
     # La url se RECONSTRUYE del id, no se confia en la del disco (que ni se persiste).
@@ -247,7 +257,7 @@ def test_validate_osv_blob_malicious_reconstruye_url_desde_id() -> None:
 
 def test_validate_osv_blob_clean_es_clean() -> None:
     blob = {"source": "osv", "ecosystem": "pypi", "name": "ok", "state": "clean"}
-    result = osv._validate_osv_blob(blob, "ok")
+    result = _pypi_source()._validate_osv_blob(blob, "ok")
     assert result is not None and result.state is MaliceState.CLEAN
 
 
@@ -268,14 +278,14 @@ def test_validate_osv_blob_rechaza_desviacion_de_esquema(
     blob = _malicious_blob("bioql")
     assert mutate == "set"
     blob[key] = value
-    assert osv._validate_osv_blob(blob, "bioql") is None
+    assert _pypi_source()._validate_osv_blob(blob, "bioql") is None
 
 
 def test_validate_osv_blob_malicious_sin_advisory_valido_es_miss() -> None:
     # `malicious` sin ningun advisory MAL- valido es incoherente => miss.
     blob = _malicious_blob("bioql")
     blob["advisories"] = [{"id": "GHSA-x", "kind": "malicious", "source": "osv"}]
-    assert osv._validate_osv_blob(blob, "bioql") is None
+    assert _pypi_source()._validate_osv_blob(blob, "bioql") is None
 
 
 def test_validate_osv_blob_descarta_advisory_con_kind_source_manipulado() -> None:
@@ -285,7 +295,7 @@ def test_validate_osv_blob_descarta_advisory_con_kind_source_manipulado() -> Non
     for bad in ({"kind": "vuln"}, {"kind": "malicious", "source": "ghsa"}):
         blob = _malicious_blob("bioql")
         blob["advisories"] = [{"id": "MAL-1", "kind": "malicious", "source": "osv", **bad}]
-        assert osv._validate_osv_blob(blob, "bioql") is None, f"no descarto {bad}"
+        assert _pypi_source()._validate_osv_blob(blob, "bioql") is None, f"no descarto {bad}"
 
 
 def test_blob_vulns_filtra_por_kind_y_source() -> None:

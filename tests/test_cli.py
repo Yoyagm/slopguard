@@ -521,16 +521,16 @@ def test_ecosystem_desconocido_exit_3(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """--ecosystem no soportado => exit 3; mensaje saneado en stderr (R6.5)."""
+    """--ecosystem no soportado => exit 3; mensaje saneado en stderr (R6.5, R1.4)."""
     manifest = tmp_path / "requirements.txt"
     manifest.write_text("requests==2.32\n")
 
-    code = main(["scan", str(manifest), "--ecosystem", "npm"])
+    # "cargo" no es un ecosistema soportado (solo pypi y npm lo son, H4-T20).
+    code = main(["scan", str(manifest), "--ecosystem", "cargo"])
 
     assert code == EXIT_OPERATIONAL
     captured = capsys.readouterr()
-    assert "npm" in captured.err
-    assert "no soportado" in captured.err
+    assert "cargo" in captured.err
     # No hay traceback crudo
     assert "Traceback" not in captured.err
     assert "File " not in captured.err
@@ -545,12 +545,13 @@ def test_ecosystem_con_ansi_saneado(
     manifest = tmp_path / "requirements.txt"
     manifest.write_text("requests==2.32\n")
 
-    code = main(["scan", str(manifest), "--ecosystem", "\x1b[31mnpm\x1b[0m"])
+    # ANSI-encoded ecosystem name is not in {pypi, npm} => exit 3 + mensaje saneado.
+    code = main(["scan", str(manifest), "--ecosystem", "\x1b[31mcargo\x1b[0m"])
 
     assert code == EXIT_OPERATIONAL
     err = capsys.readouterr().err
     assert "\x1b[" not in err
-    assert "npm" in err
+    assert "cargo" in err
 
 
 def test_ecosystem_valido_no_exit_3(
@@ -564,6 +565,141 @@ def test_ecosystem_valido_no_exit_3(
 
     code = main(["scan", str(manifest), "--ecosystem", "pypi"])
     assert code == EXIT_ALLOW
+
+
+# ---------------------------------------------------------------------------
+# H4-T20: wiring CLI --ecosystem + guard stdin (R1.3/R1.4/R1.5)
+# ---------------------------------------------------------------------------
+
+
+def test_ecosystem_npm_valido(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--ecosystem npm es valido desde H4-T20; no produce exit 3 (R1.4)."""
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"dependencies": {}}')
+    monkeypatch.setattr(_SCAN_MANIFEST, lambda *a, **kw: _REPORT_ALL_ALLOW)
+
+    code = main(["scan", str(manifest), "--ecosystem", "npm"])
+    assert code == EXIT_ALLOW
+
+
+def test_autodetect_package_json_es_npm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """package.json sin --ecosystem => auto-deteccion npm; scan_manifest llamado (R1.2)."""
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"dependencies": {}}')
+    captured: dict[str, object] = {}
+
+    def _fake_scan(path: object, cfg: object, **kw: object) -> ScanReport:
+        captured.update(kw)
+        return _REPORT_ALL_ALLOW
+
+    monkeypatch.setattr(_SCAN_MANIFEST, _fake_scan)
+
+    code = main(["scan", str(manifest)])
+    assert code == EXIT_ALLOW
+    assert captured.get("ecosystem_id") == "npm"
+
+
+def test_manifest_type_infiere_pypi_para_nombre_no_estandar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Regresion H4-T20: nombre no .txt/.json/.toml + --manifest-type => pypi, no exit 3.
+
+    --manifest-type es señal exclusiva del flujo pypi; sin --ecosystem la
+    auto-deteccion por nombre rechazaria 'deps.in' (ManifestParseError => exit 3).
+    El override implicito 'pypi' debe evitar esa regresion (§4.2 + wiring CLI).
+    """
+    manifest = tmp_path / "deps.in"
+    manifest.write_text("requests==2.32\n")
+    captured: dict[str, object] = {}
+
+    def _fake_scan(path: object, cfg: object, **kw: object) -> ScanReport:
+        captured.update(kw)
+        return _REPORT_ALL_ALLOW
+
+    monkeypatch.setattr(_SCAN_MANIFEST, _fake_scan)
+
+    code = main(["scan", str(manifest), "--manifest-type", "requirements"])
+    assert code == EXIT_ALLOW
+    assert captured.get("ecosystem_id") == "pypi"
+    assert captured.get("manifest_type") == "requirements"
+
+
+def test_ecosystem_explicito_gana_sobre_manifest_type(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--ecosystem explicito tiene precedencia sobre la inferencia por --manifest-type (R1.3)."""
+    manifest = tmp_path / "package.json"
+    manifest.write_text('{"dependencies": {}}')
+    captured: dict[str, object] = {}
+
+    def _fake_scan(path: object, cfg: object, **kw: object) -> ScanReport:
+        captured.update(kw)
+        return _REPORT_ALL_ALLOW
+
+    monkeypatch.setattr(_SCAN_MANIFEST, _fake_scan)
+
+    code = main(["scan", str(manifest), "--ecosystem", "npm", "--manifest-type", "requirements"])
+    assert code == EXIT_ALLOW
+    assert captured.get("ecosystem_id") == "npm"
+
+
+def test_stdin_sin_ecosystem_exit_3(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """stdin ('-') sin --ecosystem => exit 3 + mensaje accionable (R1.5)."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+
+    code = main(["scan", "-"])
+
+    assert code == EXIT_OPERATIONAL
+    err = capsys.readouterr().err
+    assert "ecosystem" in err.lower() or "stdin" in err.lower()
+    assert "Traceback" not in err
+
+
+def test_stdin_con_ecosystem_npm_valido(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """'scan - --ecosystem npm' no dispara guard stdin (R1.3, override gana siempre)."""
+    called_with: dict[str, object] = {}
+
+    def _fake_stdin_scan(text: str, cfg: object, **kw: object) -> ScanReport:
+        called_with.update(kw)
+        return _REPORT_ALL_ALLOW
+
+    monkeypatch.setattr(_SCAN_STDIN, _fake_stdin_scan)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+
+    code = main(["scan", "-", "--ecosystem", "npm"])
+    assert code == EXIT_ALLOW
+    assert called_with.get("ecosystem_id") == "npm"
+
+
+def test_ecosystem_invalido_lista_disponibles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ecosystem no soportado => stderr menciona ecosistemas disponibles (R1.4)."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("requests==2.32\n")
+
+    code = main(["scan", str(manifest), "--ecosystem", "cargo"])
+
+    assert code == EXIT_OPERATIONAL
+    err = capsys.readouterr().err
+    # El mensaje debe mencionar los ecosistemas disponibles (npm y pypi).
+    assert "npm" in err or "pypi" in err
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +772,7 @@ def test_stdin_guion_llama_scan_stdin(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """'scan -' usa scan_stdin con el texto leido de stdin (§3.5)."""
+    """'scan - --ecosystem pypi' usa scan_stdin con el texto leido de stdin (§3.5, R1.3)."""
     called_with: dict[str, object] = {}
 
     def _fake_stdin_scan(text: str, cfg: object, **kw: object) -> ScanReport:
@@ -646,7 +782,8 @@ def test_stdin_guion_llama_scan_stdin(
     monkeypatch.setattr(_SCAN_STDIN, _fake_stdin_scan)
     monkeypatch.setattr("sys.stdin", io.StringIO("requests==2.32\n"))
 
-    code = main(["scan", "-"])
+    # stdin requiere --ecosystem explicito (R1.5); override gana siempre (R1.3).
+    code = main(["scan", "-", "--ecosystem", "pypi"])
 
     assert code == EXIT_ALLOW
     assert "requests==2.32" in str(called_with.get("text", ""))
@@ -724,7 +861,8 @@ def test_stdin_unicode_error_retorna_3(
 
     monkeypatch.setattr("sys.stdin", _BrokenStdin())
 
-    code = main(["scan", "-"])
+    # stdin requiere --ecosystem explicito (R1.5); override gana siempre (R1.3).
+    code = main(["scan", "-", "--ecosystem", "pypi"])
 
     assert code == EXIT_OPERATIONAL
     err = capsys.readouterr().err

@@ -522,14 +522,15 @@ def test_cache_blob_gigante_se_trunca_en_render_json() -> None:
     el critic senalo como camino por el que un texto gigante podia salir sin acotar.
     """
     payload: dict[str, object] = {
+        "ecosystem": "pypi",
         "clasificacion": "fabricacion",
         "confianza": 0.9,
         "patron": "p" * 600,
         "rationale": "r" * 3000,
         "modelo": "claude-opus-4-8",
-        "prompt_version": "h3-v1",
+        "prompt_version": "h4-v1",
     }
-    assessment = _validate_blob(payload)
+    assessment = _validate_blob(payload, "pypi")
     assert assessment is not None
     # El blob NO se trunca al rehidratar: la defensa esta en la salida, no en la cache.
     assert len(assessment.rationale) == 3000

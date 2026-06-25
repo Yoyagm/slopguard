@@ -19,6 +19,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import slopguard
 from slopguard.core import (
@@ -27,6 +28,7 @@ from slopguard.core import (
     ScanReport,
     SlopGuardError,
     aggregate_exit_code,
+    detect_ecosystem,
     load_config,
     scan_manifest,
     scan_stdin,
@@ -76,9 +78,9 @@ def _add_scan_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", metavar="PATH", help="Ruta explicita al archivo de config.")
     parser.add_argument(
         "--ecosystem",
-        default="pypi",
+        default=None,
         metavar="ID",
-        help="Ecosistema a analizar (default: pypi).",
+        help="Ecosistema a analizar (pypi, npm). Se auto-detecta por nombre si se omite.",
     )
     parser.add_argument(
         "--manifest-type",
@@ -253,11 +255,39 @@ def _warn_if_layer4_sin_clave(config: Config) -> None:
         )
 
 
+def _ecosystem_override(args: argparse.Namespace, path_for_detect: Path | None) -> str | None:
+    """Resuelve el override de ecosistema a pasar a detect_ecosystem (H4-T20, §4.2).
+
+    --manifest-type es una señal exclusiva del flujo pypi (requirements/pyproject/freeze
+    no existen en npm). Cuando el usuario fuerza el tipo de parser para un archivo pero
+    NO pasa --ecosystem, inferimos 'pypi' como override implicito: asi un manifiesto pypi
+    con nombre no estandar (deps.in, Pipfile, constraints.in) no muere en la auto-deteccion
+    por nombre (que exigiria .txt/.json/.toml). El override explicito --ecosystem conserva
+    precedencia (R1.3). No aplica a stdin: el guard de stdin (R1.5) exige --ecosystem
+    explicito y se preserva intacto.
+    """
+    if args.ecosystem is not None:
+        return str(args.ecosystem)
+    if args.manifest_type is not None and path_for_detect is not None:
+        return "pypi"
+    return None
+
+
 def _run_scan(args: argparse.Namespace) -> int:
     """Orquesta el subcomando scan. Retorna el exit code entero."""
-    # Validar ecosystem antes de construir la config (borde conocido: ValueError).
-    ecosystem_id: str = args.ecosystem
-    if not _validate_ecosystem(ecosystem_id):
+    path: str = args.path
+    # path_for_detect: None cuando la entrada es stdin ("-"), Path para archivos.
+    path_for_detect = None if path == "-" else Path(path)
+    ecosystem_override = _ecosystem_override(args, path_for_detect)
+
+    # detect_ecosystem(path|None, override) aplica precedencia estricta (H4-T20, §4.2):
+    # override gana siempre; stdin sin override => error; auto-deteccion por nombre.
+    # Raises InvalidConfigError (override invalido o stdin sin --ecosystem).
+    # Raises ManifestParseError (nombre de archivo no reconocido).
+    try:
+        ecosystem_id = detect_ecosystem(path_for_detect, ecosystem_override)
+    except SlopGuardError as exc:
+        _stderr(f"Error: {exc}")
         return EXIT_OPERATIONAL
 
     overrides = _cli_overrides(args)
@@ -271,7 +301,6 @@ def _run_scan(args: argparse.Namespace) -> int:
 
     _warn_if_layer4_sin_clave(config)
     use_cache = not args.no_cache
-    path: str = args.path
 
     try:
         report = _fetch_report(path, config, use_cache, ecosystem_id, args.manifest_type)
@@ -287,22 +316,6 @@ def _run_scan(args: argparse.Namespace) -> int:
     if report.error_category is not None:
         return EXIT_OPERATIONAL
     return aggregate_exit_code(report, strict=args.strict)
-
-
-def _validate_ecosystem(ecosystem_id: str) -> bool:
-    """Valida que el ecosistema es soportado. Retorna True si es valido.
-
-    Solo "pypi" esta soportado en Hito 1. Escribe a stderr y retorna False
-    si el ecosistema no es reconocido. NUNCA llama sys.exit (el caller decide).
-    """
-    # Se valida aqui para capturar el ValueError de get_adapter antes de llamar al core.
-    if ecosystem_id != "pypi":
-        _stderr(
-            f"Ecosistema '{sanitize_for_output(ecosystem_id)}' no soportado. "
-            "Ecosistemas disponibles: ['pypi']."
-        )
-        return False
-    return True
 
 
 def _fetch_report(

@@ -41,6 +41,7 @@ from slopguard.core.errors import (
     NetworkUnverifiableError,
     SlopGuardError,
 )
+from slopguard.core.manifests.detect import detect_ecosystem
 from slopguard.core.models import (
     Advisory,
     Dependency,
@@ -84,6 +85,8 @@ __all__ = [
     "Verdict",
     # Funciones de entrada de la API (§3.1).
     "aggregate_exit_code",
+    # H4-T20: deteccion de ecosistema (C6, §4.2).
+    "detect_ecosystem",
     "load_config",
     "scan_dependencies",
     "scan_manifest",

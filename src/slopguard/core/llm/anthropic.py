@@ -97,19 +97,27 @@ class AnthropicEvaluator:
         self._settings: Final[AnthropicSettings] = settings
         self._url: Final[str] = f"https://{settings.llm_host}{settings.llm_api_path}"
 
-    def evaluate(self, name: str, context: HallucinationContext) -> LlmAssessment | None:
+    def evaluate(
+        self, name: str, context: HallucinationContext, ecosystem_id: str = "pypi"
+    ) -> LlmAssessment | None:
         """Clasifica `name`; `None` ante CUALQUIER abstencion. NUNCA lanza (ADR-15/R4).
 
         Lee la clave de entorno (ausente ⇒ None), arma el request, reintenta solo
         fallos transitorios dentro del presupuesto, valida el doble parseo y el
         esquema, y devuelve un `LlmAssessment` saneado. Cualquier excepcion inesperada
         se atrapa y degrada a `None` (la clave jamas escapa en una traza).
+
+        `ecosystem_id` (``"pypi"``/``"npm"``) se propaga hasta `build_prompt` para
+        emitir el texto del ecosistema correcto (ADR-6, H4); el default ``"pypi"``
+        preserva el comportamiento existente. `build_prompt` valida `ecosystem_id`
+        contra su tabla cerrada y lanza `ValueError` ante un id de cableado invalido;
+        ese fallo cae en el `except Exception` y degrada a `None` (la clave no escapa).
         """
         api_key = os.environ.get(_API_KEY_ENV)
         if not api_key:
             return None
         try:
-            envelope = self._post_with_retries(name, context, api_key)
+            envelope = self._post_with_retries(name, context, api_key, ecosystem_id)
             if envelope is None:
                 return None
             return self._parse_envelope(envelope)
@@ -121,7 +129,7 @@ class AnthropicEvaluator:
             return None
 
     def _post_with_retries(
-        self, name: str, context: HallucinationContext, api_key: str
+        self, name: str, context: HallucinationContext, api_key: str, ecosystem_id: str
     ) -> dict[str, object] | None:
         """Envia el POST con reintentos solo de fallos transitorios; `None` si abstiene.
 
@@ -130,8 +138,11 @@ class AnthropicEvaluator:
         con `is_transient=True` (5xx/429/timeout/conexion caida). Un fallo permanente
         (400 por payload, 401/403 por clave invalida, anomalia de seguridad) corta sin
         reintentar. Agotado el presupuesto o los reintentos ⇒ `None`.
+
+        `ecosystem_id` se propaga a `_build_body`/`build_prompt`. El cuerpo se arma UNA
+        vez antes del bucle: el texto del prompt es estable entre reintentos.
         """
-        body = self._build_body(name, context)
+        body = self._build_body(name, context, ecosystem_id)
         headers = {"x-api-key": api_key, "anthropic-version": self._settings.llm_api_version}
         deadline = time.monotonic() + self._settings.llm_timeout_total_s
         max_attempts = self._settings.llm_reintentos + 1
@@ -160,11 +171,15 @@ class AnthropicEvaluator:
             extra_headers=headers,
         )
 
-    def _build_body(self, name: str, context: HallucinationContext) -> dict[str, object]:
+    def _build_body(
+        self, name: str, context: HallucinationContext, ecosystem_id: str
+    ) -> dict[str, object]:
         """Arma el cuerpo del request (design §2.7); SIN temperature/top_p/thinking.
 
         `output_config.format` fija la salida estructurada via `RESPONSE_SCHEMA`. El
-        nombre+contexto se encajonan como datos en `build_prompt` (ADR-19).
+        nombre+contexto se encajonan como datos en `build_prompt` (ADR-19). El
+        `ecosystem_id` se reenvia a `build_prompt`, que emite el texto del ecosistema
+        desde su tabla cerrada (nunca refleja el valor crudo; ADR-6, H4).
         """
         return {
             "model": self._settings.llm_model,
@@ -173,7 +188,9 @@ class AnthropicEvaluator:
                 "effort": self._settings.llm_effort,
                 "format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
             },
-            "messages": [{"role": "user", "content": build_prompt(name, context)}],
+            "messages": [
+                {"role": "user", "content": build_prompt(name, context, ecosystem_id)}
+            ],
         }
 
     def _parse_envelope(self, envelope: dict[str, object]) -> LlmAssessment | None:

@@ -120,6 +120,15 @@ class PypiAdapter:
         """Devuelve el dataset top-N ya cargado y verificado en `__init__` (ADR-02)."""
         return self._top_n
 
+    @property
+    def candidate_filter(self) -> None:
+        """PyPI no tiene scopes: filtro identidad (ADR-4). `None` => todos elegibles.
+
+        El engine pasa este `None` a `layer1_similarity.evaluate`, dejando la Capa 1 con
+        el comportamiento PyPI original (cero regresion, R11).
+        """
+        return None
+
     def get_downloads(self, name: str) -> None:
         """Hook reservado. Retorna None siempre (R4.4); no es senal de riesgo."""
         return None

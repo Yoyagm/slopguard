@@ -1,25 +1,27 @@
-"""Dataset top-N de PyPI: estructura inmutable con indices precomputados.
+"""Dataset top-N: estructura inmutable con indices precomputados.
 
 `TopNDataset` acota el coste de Capa 1 (ADR-02): `by_length` habilita la banda de
 Damerau-Levenshtein (solo candidatos con longitud en `[L-dl_max, L+dl_max]`) y
 `by_first_char` el prefiltro de Jaro-Winkler.
 
-`load_top_n` carga el artefacto embebido verificando su checksum SHA-256 contra el
-archivo `.sha256` adjunto. Si falta algun archivo, el JSON no es parseable, o el
-checksum no coincide, lanza `DatasetIntegrityError` (R3.9, NFR-Seg.7).
+`load_top_n` carga el artefacto verificando su checksum SHA-256 contra el archivo
+`.sha256` adjunto. Si falta algun archivo, el JSON no es parseable, o el checksum
+no coincide, lanza `DatasetIntegrityError` (R3.9, NFR-Seg.7).
 
-Contrato de `build_top_n`: normaliza los nombres via `normalize_name` (PEP 503) antes
-de deduplicar y construir los indices. Esto garantiza el invariante incluso si una
-futura regeneracion del artefacto (T19) introdujera nombres sin normalizar, evitando
-que un miembro no normalizado nunca matchee en Capa 1 de forma silenciosa (ADR-02,
-opcion A defensiva).
+Contrato de `build_top_n`: normaliza los nombres via `normalize_fn` (PEP 503 por
+defecto para PyPI; `_normalize_npm_name` para npm, ADR-3b) antes de deduplicar y
+construir los indices. La parametrizacion evita que un miembro no normalizado
+matchee de forma silenciosa (ADR-02, opcion A defensiva).
+
+`load_top_n_npm` (H4-T11) vive en `core.adapters.npm` junto a `_normalize_npm_name`
+para evitar dependencia circular (npm.py->top_n.py es aceptable; la inversa no lo es).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,18 +43,26 @@ class TopNDataset:
 _DEFAULT_JSON = Path(__file__).parent / "pypi_top_10k.json"
 _DEFAULT_SHA256 = Path(__file__).parent / "pypi_top_10k.sha256"
 
+NPM_JSON = Path(__file__).parent / "npm_top_8k.json"
+NPM_SHA256 = Path(__file__).parent / "npm_top_8k.sha256"
+
 
 def load_top_n(
     json_path: Path | None = None,
     sha_path: Path | None = None,
+    *,
+    normalize_fn: Callable[[str], str] | None = None,
 ) -> TopNDataset:
     """Carga el dataset top-N desde disco y verifica su integridad SHA-256.
 
     Si `json_path` o `sha_path` son None, usa los artefactos embebidos junto
-    a este modulo. Lanza `DatasetIntegrityError` si:
+    a este modulo (PyPI). Lanza `DatasetIntegrityError` si:
     - alguno de los archivos falta o no puede leerse,
     - el JSON no es parseable o le faltan campos obligatorios,
     - el digest SHA-256 del `.json` en disco no coincide con el valor del `.sha256`.
+
+    `normalize_fn` parametriza la normalizacion de nombres antes de indexar; el
+    default `None` usa `normalize_name` (PEP 503, comportamiento PyPI original).
     """
     resolved_json = json_path or _DEFAULT_JSON
     resolved_sha = sha_path or _DEFAULT_SHA256
@@ -73,7 +83,9 @@ def load_top_n(
         )
     version = str(artifact.get("version", ""))
     generated_at = str(artifact.get("generated_at", ""))
-    return build_top_n(names, version=version, generated_at=generated_at)
+    return build_top_n(
+        names, version=version, generated_at=generated_at, normalize_fn=normalize_fn
+    )
 
 
 def _read_file_bytes(path: Path) -> bytes:
@@ -117,15 +129,25 @@ def _parse_artifact(raw_bytes: bytes, json_path: Path) -> dict[str, object]:
     return artifact
 
 
-def build_top_n(names: Iterable[str], *, version: str, generated_at: str) -> TopNDataset:
-    """Construye los indices normalizando (PEP 503), deduplicando y ordenando.
+def build_top_n(
+    names: Iterable[str],
+    *,
+    version: str,
+    generated_at: str,
+    normalize_fn: Callable[[str], str] | None = None,
+) -> TopNDataset:
+    """Construye los indices normalizando, deduplicando y ordenando.
 
-    Aplica `normalize_name` antes de deduplicar, garantizando que todos los miembros
-    esten en forma canonica PEP 503 independientemente de si el artefacto fuente ya
-    los traia normalizados (invariante defensivo, ADR-02 opcion A).
+    `normalize_fn` determina la normalizacion aplicada antes de indexar:
+    - `None` (default): usa `normalize_name` (PEP 503) — comportamiento PyPI original.
+    - `_normalize_npm_name`: para npm (ADR-3b); preserva `._-` sin colapsar.
+
+    La normalizacion se aplica antes de deduplicar, garantizando que todos los miembros
+    esten en forma canonica independientemente del artefacto fuente (ADR-02 opcion A).
     Determinista: los buckets tienen orden estable.
     """
-    unique = sorted(set(normalize_name(n) for n in names))
+    _normalize = normalize_fn if normalize_fn is not None else normalize_name
+    unique = sorted(set(_normalize(n) for n in names))
     by_length: dict[int, list[str]] = {}
     by_first_char: dict[str, list[str]] = {}
     for name in unique:

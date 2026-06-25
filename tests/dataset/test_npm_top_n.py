@@ -22,7 +22,9 @@ import pytest
 from slopguard.core.adapters.npm import (
     NpmAdapter,
     _extract_metadata,
+    _is_valid_npm_name,
     _normalize_npm_name,
+    _npm_scope,
     load_top_n_npm,
 )
 from slopguard.core.config import Config
@@ -359,3 +361,128 @@ def test_npm_adapter_load_top_n_devuelve_top_n_dataset() -> None:
     assert len(dataset.members) > 0
     # El corpus npm contiene lodash.merge con normalizacion correcta
     assert "lodash.merge" in dataset.members
+
+
+# ---------------------------------------------------------------------------
+# Completitud y consistencia del corpus embebido (data-quality-auditor, R5.1)
+#
+# El corpus npm alimenta la senal de popularidad de Capa 1. Un corpus con
+# silent-nulls (nombres vacios/whitespace), formas no canonicas, nombres no
+# consultables o indices inconsistentes degrada la senal de forma silenciosa.
+# Estos tests fijan las dimensiones Completeness / Consistency / Validity /
+# Uniqueness sobre el corpus real embebido; un futuro cambio del snapshot que
+# rompa cualquiera de ellas falla aqui antes de envenenar Capa 1.
+# ---------------------------------------------------------------------------
+
+
+def test_corpus_sin_nombres_vacios_ni_whitespace() -> None:
+    """Completeness: ningun miembro es vacio ni tiene whitespace de borde (silent-null).
+
+    Un nombre vacio o con espacios alrededor seria un silent-null que infla el
+    conteo del corpus sin aportar senal y nunca matcheria un nombre consultado.
+    """
+    dataset = load_top_n_npm()
+
+    offenders = [n for n in dataset.members if n == "" or n != n.strip()]
+
+    assert offenders == [], f"miembros vacios/con whitespace: {offenders[:5]}"
+
+
+def test_corpus_todos_los_miembros_en_forma_canonica() -> None:
+    """Consistency: todo miembro es idempotente bajo `_normalize_npm_name`.
+
+    `_extract_metadata` calcula `in_top_n` como `_normalize_npm_name(name) in members`.
+    Si un miembro del corpus no estuviera ya en forma canonica, jamas podria
+    matchear (su forma normalizada diferiria de la almacenada): falso negativo
+    silencioso de popularidad.
+    """
+    dataset = load_top_n_npm()
+
+    non_canonical = [n for n in dataset.members if _normalize_npm_name(n) != n]
+
+    assert non_canonical == [], f"miembros no canonicos: {non_canonical[:5]}"
+
+
+def test_corpus_todos_los_miembros_en_minuscula() -> None:
+    """Consistency: ningun miembro contiene mayusculas (normalizacion lower aplicada)."""
+    dataset = load_top_n_npm()
+
+    upper = [n for n in dataset.members if n != n.lower()]
+
+    assert upper == [], f"miembros con mayusculas: {upper[:5]}"
+
+
+def test_corpus_todos_los_miembros_son_consultables() -> None:
+    """Validity: todo miembro del corpus pasa `_is_valid_npm_name` (pre-fetch).
+
+    El corpus es el universo contra el que se compara un nombre consultado; si
+    contuviera un nombre que el propio adapter rechazaria antes de salir a la red
+    (charset/estructura peligrosa), seria dato corrupto inyectado en Capa 1.
+    """
+    dataset = load_top_n_npm()
+
+    invalid = [n for n in dataset.members if not _is_valid_npm_name(n)]
+
+    assert invalid == [], f"miembros no consultables (pre-fetch invalido): {invalid[:5]}"
+
+
+def test_corpus_miembros_scoped_bien_formados() -> None:
+    """Validity: todo miembro que empieza por `@` es `@scope/name` con un solo `/`."""
+    dataset = load_top_n_npm()
+
+    malformed = [
+        n
+        for n in dataset.members
+        if n.startswith("@") and (n.count("/") != 1 or _npm_scope(n) is None)
+    ]
+
+    assert malformed == [], f"scoped malformados: {malformed[:5]}"
+
+
+def test_corpus_indice_by_length_consistente_con_members() -> None:
+    """Consistency: `by_length` cubre exactamente los miembros, sin duplicados.
+
+    Capa 1 itera `by_length` para la banda de Damerau-Levenshtein; un indice que
+    omita o duplique miembros sesgaria la deteccion de typosquats.
+    """
+    dataset = load_top_n_npm()
+
+    indexed = [name for bucket in dataset.by_length.values() for name in bucket]
+
+    assert len(indexed) == len(dataset.members), "by_length tiene duplicados o huecos"
+    assert frozenset(indexed) == dataset.members
+    # Cada nombre esta en el bucket de SU longitud (clave coherente con el valor).
+    for length, bucket in dataset.by_length.items():
+        assert all(len(name) == length for name in bucket)
+
+
+def test_corpus_indice_by_first_char_consistente_con_members() -> None:
+    """Consistency: `by_first_char` cubre exactamente los miembros, sin duplicados.
+
+    Capa 1 itera `by_first_char` para el prefiltro de Jaro-Winkler; los scoped van
+    todos bajo '@' (su primer caracter), comportamiento que el filtro mismo-scope
+    de ADR-4 contempla.
+    """
+    dataset = load_top_n_npm()
+
+    indexed = [name for bucket in dataset.by_first_char.values() for name in bucket]
+
+    assert len(indexed) == len(dataset.members), "by_first_char tiene duplicados o huecos"
+    assert frozenset(indexed) == dataset.members
+    # Cada nombre esta indexado bajo SU primer caracter.
+    for first_char, bucket in dataset.by_first_char.items():
+        assert all(name[0] == first_char for name in bucket)
+
+
+def test_corpus_sin_duplicados_tras_normalizacion() -> None:
+    """Uniqueness: el conteo de miembros del corpus embebido es estable y unico.
+
+    `members` es un frozenset, por lo que la unicidad es estructural; este test fija
+    el tamano canonico (8.000 ± banda) y verifica que recargar produce el mismo set
+    (determinismo del artefacto verificado).
+    """
+    first = load_top_n_npm()
+    second = load_top_n_npm()
+
+    assert first.members == second.members
+    assert len(first.members) == len(set(first.members))

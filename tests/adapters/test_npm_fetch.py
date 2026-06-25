@@ -20,6 +20,9 @@ No se ejercitan los reintentos/backoff (eso vive en `concurrent.py`, ya cubierto
 
 from __future__ import annotations
 
+import dataclasses
+import io
+import json
 import threading
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -32,9 +35,10 @@ from slopguard.core.adapters.npm import NpmAdapter
 from slopguard.core.config import Config
 from slopguard.core.errors import NetworkUnverifiableError
 from slopguard.core.net.http_client import ALLOWED_HOSTS
+from slopguard.core.net.safe_json import safe_json_loads
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
 # Host del registry npm: debe entrar al allowlist SOLO via el adapter (R4.5).
 _NPM_HOST = "registry.npmjs.org"
@@ -421,6 +425,181 @@ def test_host_npm_solo_en_la_instancia_del_adapter() -> None:
     effective = adapter._http._allowed_hosts
     assert _NPM_HOST in effective
     assert "pypi.org" in effective  # la base anclada se conserva
+
+
+# ---------------------------------------------------------------------------
+# Camino REAL del transporte: safe_json estricto + cap a mitad de stream (§7.1/§7.3)
+#
+# Los tests de arriba mockean `adapter._http` (el cliente entero), util para fijar el
+# CONTRATO del adapter por estado. Los de abajo bajan un nivel: mockean SOLO el
+# `_opener.open` de bajo nivel y dejan correr el `SecureHttpClient` REAL del adapter
+# (streaming acotado + `safe_json_loads`), para verificar dos invariantes que solo el
+# transporte real ejerce: el rechazo de constantes no finitas en el parseo (§7.1,
+# design L510 "safe_json estricto, sin NaN/Infinity") y la cota a mitad de stream
+# (§7.3 "correctness del limite a mitad de stream", ADR-2).
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpResponse:
+    """Doble de un objeto-respuesta de urllib: `headers` + `read(n)` desde un buffer.
+
+    Reproduce el patron de `tests/test_net.py`: el adapter usa su `SecureHttpClient`
+    REAL y solo se sustituye `_opener.open` para devolver esta respuesta sin red. El
+    cuerpo se entrega en chunks (via `io.BytesIO`), de modo que el cap de streaming se
+    ejerce de verdad. Registra `bytes_read` para asertar el aborto a mitad de stream.
+    """
+
+    def __init__(self, body: bytes, headers: Mapping[str, str]) -> None:
+        self._headers = {k.lower(): v for k, v in headers.items()}
+        self._stream = io.BytesIO(body)
+        self.bytes_read = 0
+
+    @property
+    def headers(self) -> _FakeHttpResponse:
+        """El objeto cabecera (este mismo doble) expone solo `.get` insensible a caso."""
+        return self
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        """Acceso a cabecera insensible a mayusculas (como `http.client.HTTPMessage`)."""
+        return self._headers.get(key.lower(), default)
+
+    def read(self, size: int) -> bytes:
+        chunk = self._stream.read(size)
+        self.bytes_read += len(chunk)
+        return chunk
+
+    def __enter__(self) -> _FakeHttpResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stream.close()
+
+
+def _adapter_with_raw_body(
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+    *,
+    headers: Mapping[str, str] | None = None,
+    config: Config | None = None,
+) -> tuple[NpmAdapter, _FakeHttpResponse]:
+    """NpmAdapter con su `SecureHttpClient` REAL; solo se mockea `_opener.open`.
+
+    Devuelve tambien la respuesta inyectada para inspeccionar `bytes_read` (aborto a
+    mitad de stream). A diferencia de `_make_adapter` (que reemplaza `adapter._http`
+    entero), aqui el cuerpo crudo recorre el streaming acotado y `safe_json_loads`
+    reales del cliente, asi se ejerce el camino de parseo/cap de produccion.
+    """
+    adapter = NpmAdapter(config or Config(), use_cache=False)
+    response = _FakeHttpResponse(body, headers or {})
+
+    def fake_open(_request: object, timeout: float) -> _FakeHttpResponse:
+        return response
+
+    monkeypatch.setattr(adapter._http._opener, "open", fake_open)
+    return adapter, response
+
+
+# ---- safe_json estricto: NaN / Infinity / -Infinity (§7.1, design L510) ----
+
+
+@pytest.mark.parametrize(
+    "nonfinite_body",
+    [
+        b'{"name": "x", "versions": {}, "confidence": NaN}',
+        b'{"name": "x", "versions": {}, "weight": Infinity}',
+        b'{"name": "x", "versions": {}, "weight": -Infinity}',
+    ],
+)
+def test_safe_json_loads_rechaza_constantes_no_finitas(nonfinite_body: bytes) -> None:
+    """`safe_json_loads` en modo estricto rechaza NaN/Infinity/-Infinity (§7.1).
+
+    JSON estandar NO admite constantes no finitas, pero `json.loads` las acepta por
+    defecto (NaN/inf). Un `NaN` en el packument evadiria todo chequeo de rango
+    (`NaN<0` y `NaN>1` son ambos False): `reject_nonfinite=True` las corta en el
+    parseo, antes de cualquier mapeo, con `NetworkUnverifiableError` (fail-closed).
+    """
+    with pytest.raises(NetworkUnverifiableError, match="no finita"):
+        safe_json_loads(nonfinite_body, 50, reject_nonfinite=True)
+
+
+def test_safe_json_loads_acepta_numeros_finitos() -> None:
+    """Control: un cuerpo con numeros finitos pasa el parseo estricto sin tocar el flujo.
+
+    Asegura que el rechazo de no-finitos es selectivo (no rechaza todo numero): el
+    mismo modo estricto acepta enteros/floats normales y devuelve el objeto intacto.
+    """
+    parsed = safe_json_loads(b'{"a": 1, "b": 2.5}', 50, reject_nonfinite=True)
+    assert parsed == {"a": 1, "b": 2.5}
+
+
+# ---- Cap a mitad de stream end-to-end via el SecureHttpClient REAL (§7.3) ----
+
+
+def test_cap_aborta_a_mitad_de_stream_sin_materializar_cuerpo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un cuerpo > `npm_max_response_bytes` aborta a mitad de stream (§7.3, ADR-2).
+
+    Se inyecta un `npm_max_response_bytes` pequeno y un cuerpo varias veces mayor: el
+    `SecureHttpClient` REAL aborta la lectura en cuanto el acumulado supera la cota,
+    SIN materializar el cuerpo completo (correctness del limite a mitad de stream).
+    El resultado es UNVERIFIABLE permanente, jamas FOUND con metadata parcial (R4.3).
+    """
+    small_cap = 1_000
+    oversized = b" " * 100_000 + b'{"versions": {}}'  # 100KB >> cap
+    config = dataclasses.replace(Config(), npm_max_response_bytes=small_cap)
+    adapter, response = _adapter_with_raw_body(monkeypatch, oversized, config=config)
+
+    attempt = adapter.fetch_attempt("huge-pkg")
+
+    assert attempt.outcome.state is FetchState.UNVERIFIABLE
+    assert attempt.is_transient is False  # cap => permanente, no reintentar a ciegas
+    assert attempt.outcome.metadata is None  # nunca metadata parcial
+    # Aborto a mitad de stream: NO se leyo el cuerpo entero (cota dura, no post-lectura).
+    assert response.bytes_read < len(oversized)
+
+
+def test_cuerpo_bajo_cap_se_parsea_y_es_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control del cap: un cuerpo holgadamente bajo la cota se parsea y produce FOUND.
+
+    Demuestra que el aborto del test anterior es por exceder la cota, no un fallo del
+    camino real de transporte: el mismo `SecureHttpClient` real entrega FOUND cuando el
+    cuerpo cabe, leyendo el stream completo.
+    """
+    body = json.dumps(_GOOD_PACKUMENT).encode("utf-8")
+    config = dataclasses.replace(Config(), npm_max_response_bytes=1_000_000)
+    adapter, response = _adapter_with_raw_body(monkeypatch, body, config=config)
+
+    outcome = adapter.fetch("lodash")
+
+    assert outcome.state is FetchState.FOUND
+    assert outcome.metadata is not None
+    assert outcome.metadata.releases_count == 2  # mapeo real sobre el cuerpo parseado
+    assert response.bytes_read == len(body)  # cuerpo completo leido (no abortado)
+
+
+def test_content_length_excesivo_npm_es_unverifiable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un `Content-Length` que excede la cota npm aborta ANTES de leer el cuerpo (R4.3).
+
+    Defensa temprana del cap (ADR-2): si el servidor declara un tamano mayor que
+    `npm_max_response_bytes`, el cliente real ni siquiera lee el cuerpo; el adapter lo
+    degrada a UNVERIFIABLE permanente sin metadata.
+    """
+    config = dataclasses.replace(Config(), npm_max_response_bytes=1_000)
+    adapter, response = _adapter_with_raw_body(
+        monkeypatch, b"{}", headers={"Content-Length": "999999999"}, config=config
+    )
+
+    attempt = adapter.fetch_attempt("huge-pkg")
+
+    assert attempt.outcome.state is FetchState.UNVERIFIABLE
+    assert attempt.is_transient is False
+    assert attempt.outcome.metadata is None
+    assert response.bytes_read == 0  # se aborto por Content-Length, sin leer el cuerpo
 
 
 @pytest.fixture

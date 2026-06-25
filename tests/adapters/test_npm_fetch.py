@@ -424,7 +424,9 @@ def test_host_npm_solo_en_la_instancia_del_adapter() -> None:
     adapter = NpmAdapter(Config(), use_cache=False)
     effective = adapter._http._allowed_hosts
     assert _NPM_HOST in effective
-    assert "pypi.org" in effective  # la base anclada se conserva
+    # Comparacion EXACTA por elemento (frozenset), no substring de URL: evita el
+    # falso positivo de CodeQL py/incomplete-url-substring-sanitization.
+    assert any(host == "pypi.org" for host in effective)  # la base anclada se conserva
 
 
 # ---------------------------------------------------------------------------

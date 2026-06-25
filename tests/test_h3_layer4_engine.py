@@ -72,12 +72,13 @@ def _outcome(name: str = "reqursts", *, edad_dias: int = 10) -> FetchOutcome:
     )
 
 
-def _ctx(config: Config) -> engine._ScanContext:
+def _ctx(config: Config, ecosystem_id: str = "pypi") -> engine._ScanContext:
     return engine._ScanContext(
         config=config,
         now_epoch=1_700_000_000.0,
         top_n=build_top_n([], version="test", generated_at="test"),
         threat_intel={},
+        ecosystem_id=ecosystem_id,
     )
 
 

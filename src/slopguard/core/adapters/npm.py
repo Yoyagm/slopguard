@@ -39,12 +39,18 @@ from __future__ import annotations
 
 import datetime
 import re
-from typing import TYPE_CHECKING, Final
+from pathlib import Path
+from typing import Final
+from urllib.parse import quote
 
-from .base import PackageMetadata
-
-if TYPE_CHECKING:
-    from ..dataset.top_n import TopNDataset
+from ..cache.disk_cache import DiskCache
+from ..config import Config
+from ..dataset.top_n import NPM_JSON, NPM_SHA256, TopNDataset, load_top_n
+from ..errors import NetworkUnverifiableError
+from ..models import ErrorCategory
+from ..net.http_client import SecureHttpClient
+from .base import FetchOutcome, FetchState, PackageMetadata
+from .concurrent import FetchAttempt
 
 # Nucleo de charset npm: caracteres permitidos en UN segmento del nombre (§3.4). Solo
 # minusculas/digitos y `._~-`; ningun CRLF/ANSI/C0-C1/espacio/`%`/unicode/`:`/`/` puede
@@ -68,6 +74,55 @@ _NPM_NAME_RE: Final[re.Pattern[str]] = re.compile(
 # Topes de longitud: unica diferencia entre los dos predicados (§3.4).
 _NPM_NAME_MAX_LEN: Final[int] = 214  # limite de nombre publicable del registry npm.
 _NPM_OSV_NAME_MAX_LEN: Final[int] = 100  # cota del cuerpo OSV (igual que PyPI).
+
+# Host del registry npm: entra al allowlist del `SecureHttpClient` SOLO via este adapter
+# (R4.5/NFR-Seg.1), nunca en la constante base `ALLOWED_HOSTS` de `net.http_client`.
+_NPM_REGISTRY_HOST: Final[str] = "registry.npmjs.org"
+
+# URL del packument: el nombre validado (T01) se url-encodea con `quote(name, safe='')`
+# ANTES de interpolar (anti path-traversal/SSRF por path, §4.1, H4-T07). El `{name}` ya
+# encodeado queda como UN solo segmento opaco (`@scope/name` -> `%40scope%2Fname`), sin
+# `/` ni `..` interpretables por el registry.
+_NPM_REGISTRY_BASE: Final[str] = "https://registry.npmjs.org/{name}"
+
+# Codigo HTTP que indica inexistencia definitiva del paquete (existencia negativa).
+_HTTP_NOT_FOUND: Final[int] = 404
+
+# Outcome canonico de degradacion segura (UNVERIFIABLE por red no verificable). Cubre el
+# nombre invalido (no viaja a la red), el cap excedido (>npm_max_response_bytes, ADR-2), el
+# packument no-objeto y cualquier anomalia: jamas CLEAN ni metadata parcial inventada.
+_UNVERIFIABLE_OUTCOME: Final[FetchOutcome] = FetchOutcome(
+    state=FetchState.UNVERIFIABLE,
+    error_category=ErrorCategory.NETWORK_UNVERIFIABLE,
+)
+_NOT_FOUND_OUTCOME: Final[FetchOutcome] = FetchOutcome(state=FetchState.NOT_FOUND)
+
+
+def _build_npm_cache(config: Config, *, enabled: bool) -> DiskCache:
+    """Construye el DiskCache del adapter npm (mismo root que PyPI, namespace por ecosistema).
+
+    El namespace lo aporta el propio `DiskCache.get/put(ecosystem_id, name)` en cada llamada
+    (igual que PyPI): un blob npm de `react` y uno PyPI de `react` nunca colisionan porque la
+    clave de disco hashea `ecosystem_id:name` (aislamiento de caché del adapter, NFR-Seg.3).
+    """
+    cache_root = Path.home() / ".cache" / "slopguard"
+    return DiskCache(cache_root, config.ttl_cache_horas, enabled=enabled)
+
+
+def _classify_network_error(exc: NetworkUnverifiableError) -> FetchAttempt:
+    """Clasifica un `NetworkUnverifiableError` del fetch npm en un FetchAttempt (§4.1).
+
+    - status 404 -> NOT_FOUND (existencia negativa definitiva, permanente, R4.1).
+    - 5xx/429/timeout/conexion caida (`is_transient`) -> UNVERIFIABLE transitorio: `fetch_many`
+      lo reintenta dentro del presupuesto (R4.1, NFR-Rend.1).
+    - resto (4xx!=404, >cap de ADR-2, packument no-objeto, redirect, status None) ->
+      UNVERIFIABLE permanente. El cap excedido llega aqui como `NetworkUnverifiableError` SIN
+      `status_code` ni `is_transient` (lo lanza `_extend_capped` en streaming), de modo que cae
+      a UNVERIFIABLE fail-safe, nunca NOT_FOUND ni metadata parcial (R4.3).
+    """
+    if exc.status_code == _HTTP_NOT_FOUND:
+        return FetchAttempt(outcome=_NOT_FOUND_OUTCOME, is_transient=False)
+    return FetchAttempt(outcome=_UNVERIFIABLE_OUTCOME, is_transient=exc.is_transient)
 
 
 def _is_valid_npm_structure(name: str, *, max_len: int) -> bool:
@@ -122,6 +177,33 @@ def _normalize_npm_name(raw: str) -> str:
         scope_part, _, name_part = stripped.partition("/")
         return f"{scope_part.strip().lower()}/{name_part.strip().lower()}"
     return stripped.lower()
+
+
+# ---------------------------------------------------------------------------
+# H4-T11: carga verificada del dataset npm (ADR-3b, R5.2/R5.3)
+# ---------------------------------------------------------------------------
+
+
+def load_top_n_npm(
+    json_path: Path | None = None,
+    sha_path: Path | None = None,
+) -> TopNDataset:
+    """Carga el dataset top-N npm verificando integridad SHA-256 al arranque (H4-T11).
+
+    Inyecta `_normalize_npm_name` en `build_top_n` (ADR-3b): los nombres npm con `._-`
+    (p.ej. `lodash.merge`) permanecen en `members` sin colapsar a la forma PEP 503
+    (`lodash-merge`). Sin esta parametrizacion, `_extract_metadata` calcularia
+    `in_top_n=False` para un paquete popular con punto en su nombre, debilitando la
+    senal de popularidad (falso negativo de Capa 1).
+
+    Lanza `DatasetIntegrityError` si los archivos faltan, el JSON es invalido o el
+    checksum SHA-256 no coincide (fail-closed, R5.2).
+    """
+    return load_top_n(
+        json_path or NPM_JSON,
+        sha_path or NPM_SHA256,
+        normalize_fn=_normalize_npm_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -246,19 +328,45 @@ def _extract_license(license_field: object) -> bool:
 
 
 class NpmAdapter:
-    """Adapter del ecosistema npm: normalize_name (H4-T02) + mapeo packument (H4-T06).
+    """Adapter del ecosistema npm: normalize_name (H4-T02) + mapeo packument (H4-T06)
+    + carga verificada del dataset (H4-T11) + fetch/cap/URL anti-traversal (H4-T07).
 
     H4-T02 implementa `normalize_name` (§3.4, R3.1/R3.2/R3.4).
     H4-T06 introduce `_extract_metadata` (§3.2, ADR-1, R4.2/R4.4).
-    Los metodos `fetch`/`fetch_attempt`/`load_top_n`/`get_downloads` se implementan en
-    tareas posteriores (H4-T07, H4-T11) que amplian esta clase sin tocar el nucleo
-    de charset ni el mapeo de packument.
+    H4-T07 implementa `fetch`/`fetch_attempt`/`get_downloads` + cap de streaming
+    (`npm_max_response_bytes`, ADR-2) + URL con `quote(name, safe='')` (§4.1).
+    H4-T11 implementa `load_top_n` via `load_top_n_npm` (ADR-3b, R5.2/R5.3).
+
+    El cliente HTTP, la caché y el dataset top-N se instancian UNA vez en `__init__`
+    (ADR-02: verificacion de integridad al arranque, no por-dependencia) y se reutilizan
+    en todas las llamadas. El host `registry.npmjs.org` entra al allowlist del cliente
+    SOLO aqui (R4.5/NFR-Seg.1), analogo a como `OsvSource` aporta `api.osv.dev`.
+
+    Implementa `RetryableAdapter.fetch_attempt`: `fetch_many` reintenta SOLO los fallos
+    transitorios (5xx/429/timeout) sin un camino de concurrencia nuevo (NFR-Rend.1).
 
     Frontera de arquitectura (R10.1): este modulo SI puede usar net/cache/dataset;
     las capas y el scoring importan SOLO de `adapters.base`, nunca de aqui (import-linter).
     """
 
     ecosystem_id: str = "npm"
+
+    def __init__(self, config: Config, *, use_cache: bool = True) -> None:
+        """Inicializa el adapter; carga y verifica el dataset top-N npm UNA vez (ADR-02).
+
+        El `SecureHttpClient` se construye con `extra_allowed_hosts={registry.npmjs.org}`:
+        el host npm entra al allowlist EFECTIVO SOLO por esta instancia (R4.5/NFR-Seg.1),
+        jamas en la constante base global. Cargar el dataset aqui centraliza la verificacion
+        de integridad en un punto determinista al arranque (un dataset corrupto/ausente aborta
+        con `DatasetIntegrityError`, exit 3, antes de despachar la pool), sin re-lectura ni
+        rehash por-dependencia (NFR-Rend).
+        """
+        self._config = config
+        self._http = SecureHttpClient(
+            extra_allowed_hosts=frozenset({_NPM_REGISTRY_HOST})
+        )
+        self._cache = _build_npm_cache(config, enabled=use_cache)
+        self._top_n = load_top_n_npm()
 
     def normalize_name(self, raw: str) -> str:
         """Normaliza un nombre npm segun las reglas del ecosistema (§3.4, R3.1/R3.2).
@@ -269,3 +377,75 @@ class NpmAdapter:
         Idempotente: normalize(normalize(x)) == normalize(x).
         """
         return _normalize_npm_name(raw)
+
+    def fetch(self, name: str) -> FetchOutcome:
+        """Un intento unico (cache->red) sin reintentos: el `FetchOutcome` resuelto (R4.1).
+
+        Es la via de `EcosystemAdapter`; colapsa toda anomalia (transitoria o permanente)
+        a `FetchOutcome(UNVERIFIABLE)`, nunca FOUND ni CLEAN. El motor concurrente usa
+        `fetch_attempt` para reintentar transitorios; `fetch` queda como contrato base.
+        """
+        return self.fetch_attempt(name).outcome
+
+    def fetch_attempt(self, name: str) -> FetchAttempt:
+        """Un intento que reporta si el fallo fue transitorio (RetryableAdapter, R4.1).
+
+        Orden estricto (fail-closed, §4.1): normalizar -> VALIDAR estructura (T01) ANTES de
+        tocar cache/red -> cache antes de red -> red. Un nombre estructuralmente invalido
+        (CRLF/ANSI/unicode, `/` extra, segmento `..`/`.`, inicio por `.`/`_`, >214) cae a
+        UNVERIFIABLE permanente SIN viajar a la red ni consultar caché, y NUNCA produce CLEAN
+        (R3.3/R4.5). FOUND/NOT_FOUND se cachean; UNVERIFIABLE no.
+        """
+        normalized = self.normalize_name(name)
+        if not _is_valid_npm_name(normalized):
+            return FetchAttempt(outcome=_UNVERIFIABLE_OUTCOME, is_transient=False)
+        cached = self._cache.get(self.ecosystem_id, normalized)
+        if cached is not None:
+            return FetchAttempt(outcome=cached, is_transient=False)
+        attempt = self._fetch_from_network(normalized)
+        self._cache.put(self.ecosystem_id, normalized, attempt.outcome)
+        return attempt
+
+    def load_top_n(self) -> TopNDataset:
+        """Devuelve el TopNDataset npm ya cargado y verificado en `__init__` (ADR-02).
+
+        El dataset se carga/verifica una sola vez al construir el adapter (sin re-lectura ni
+        rehash por dependencia). El checksum SHA-256 ya se valido alli (fail-closed, R5.2).
+        """
+        return self._top_n
+
+    def get_downloads(self, name: str) -> None:
+        """Hook reservado. Retorna None siempre (R4.4); la ausencia NO es senal de riesgo."""
+        return None
+
+    def _fetch_from_network(self, name: str) -> FetchAttempt:
+        """Consulta el packument del registry npm y clasifica la respuesta (§4.1, ADR-1/ADR-2).
+
+        El `name` ya esta normalizado Y validado (T01) por `fetch_attempt`; aqui se url-encodea
+        con `quote(name, safe='')` (`@scope/name` -> `%40scope%2Fname`) ANTES de interpolar la
+        URL, de modo que el path es UN segmento opaco sin `/` ni `..` interpretables (anti
+        path-traversal/SSRF, §4.1). Se solicita el packument completo: `get_json` ya envia
+        `Accept: application/json` (no `install-v1`, ADR-1). El cap de tamano es el propio del
+        ecosistema (`npm_max_response_bytes`, ADR-2): un cuerpo que lo excede llega como
+        `NetworkUnverifiableError` desde el streaming y se clasifica UNVERIFIABLE (fail-safe).
+
+        Defensa en profundidad (R4.4/NFR-Degr.1): cualquier excepcion que NO sea
+        `NetworkUnverifiableError` se degrada a UNVERIFIABLE permanente sin filtrar el mensaje,
+        para que una sola dependencia envenenada nunca aborte el lote ni escape como stacktrace.
+        """
+        url = _NPM_REGISTRY_BASE.format(name=quote(name, safe=""))
+        try:
+            payload = self._http.get_json(
+                url,
+                connect_timeout_s=self._config.connect_timeout_s,
+                read_timeout_s=self._config.read_timeout_s,
+                max_response_bytes=self._config.npm_max_response_bytes,
+                max_json_depth=self._config.max_json_depth,
+            )
+        except NetworkUnverifiableError as exc:
+            return _classify_network_error(exc)
+        except Exception:
+            return FetchAttempt(outcome=_UNVERIFIABLE_OUTCOME, is_transient=False)
+        metadata = _extract_metadata(payload, name, self._top_n)
+        outcome = FetchOutcome(state=FetchState.FOUND, metadata=metadata)
+        return FetchAttempt(outcome=outcome, is_transient=False)

@@ -27,11 +27,14 @@ import pytest
 from slopguard.core.adapters import npm
 from slopguard.core.adapters.npm import NpmAdapter
 from slopguard.core.adapters.pypi import PypiAdapter
+from slopguard.core.config import Config
 
 
 @pytest.fixture
 def adapter() -> NpmAdapter:
-    return NpmAdapter()
+    # H4-T07 dio a NpmAdapter un __init__(config, *, use_cache); `normalize_name` es puro
+    # pero la construccion ahora exige Config. use_cache=False evita tocar el disco.
+    return NpmAdapter(Config(), use_cache=False)
 
 
 # ---------------------------------------------------------------------------

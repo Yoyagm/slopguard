@@ -71,6 +71,15 @@ _PYPROJECT = _PROJECT_ROOT / "pyproject.toml"
 # `core.net.http_client.ALLOWED_HOSTS`). Cualquier otro host literal es violacion.
 ALLOWLIST: frozenset[str] = frozenset({"pypi.org"})
 
+# Hosts de transporte de ADAPTERS de ecosistema cuya URL base se hardcodea en su modulo
+# (espejo de los `_*_API_BASE`/`_*_REGISTRY_BASE` por adapter, no de la base global). PyPI
+# usa `pypi.org` (ya en `ALLOWLIST`); npm usa `registry.npmjs.org` (H4-T07, R4.5): el host
+# entra al allowlist EFECTIVO SOLO por la instancia del `NpmAdapter` (`extra_allowed_hosts`),
+# NUNCA en `ALLOWED_HOSTS` base (verificado aparte). Aqui se exime el literal de URL del
+# adapter como host de transporte legitimo, igual que `pypi.org`; cualquier OTRO host ajeno
+# se sigue detectando como violacion.
+_ADAPTER_TRANSPORT_HOSTS: frozenset[str] = frozenset({"registry.npmjs.org"})
+
 # Hosts de REFERENCIA/DISPLAY exentos del guardia de URLs literales (NFR-Priv.2).
 # `osv.dev` NO es un destino de red: es el host canonico de la pagina del advisory
 # (`https://osv.dev/vulnerability/<id>`) que `core/threatintel/osv.py` RECONSTRUYE
@@ -80,8 +89,9 @@ ALLOWLIST: frozenset[str] = frozenset({"pypi.org"})
 # (legitimo): `osv.dev` se exime aqui, cualquier OTRO host ajeno se sigue detectando.
 _DISPLAY_HOSTS: frozenset[str] = frozenset({"osv.dev"})
 
-# Allowlist efectiva del detector de URLs literales = transporte permitido + display.
-_URL_HOST_ALLOWLIST: frozenset[str] = ALLOWLIST | _DISPLAY_HOSTS
+# Allowlist efectiva del detector de URLs literales = transporte permitido (base +
+# adapters) + display.
+_URL_HOST_ALLOWLIST: frozenset[str] = ALLOWLIST | _ADAPTER_TRANSPORT_HOSTS | _DISPLAY_HOSTS
 
 # Primitivas de ejecucion/import dinamico prohibidas como `Call` directo (NFR-Seg.1).
 _FORBIDDEN_CALLS: frozenset[str] = frozenset({"eval", "exec", "__import__"})
@@ -93,6 +103,13 @@ _IMPORTLIB_DYNAMIC = frozenset({"import_module", "__import__"})
 _NETWORK_MODULES = frozenset(
     {"urllib", "socket", "ssl", "http.client", "asyncio", "ftplib", "telnetlib"}
 )
+
+# Submodulos de PARSING puro exentos del guardia de imports de red: no abren sockets ni
+# transportan datos, solo manipulan strings de URL. `urllib.parse.quote`/`urlsplit` los usa
+# el `NpmAdapter` (H4-T07) para url-encodear el nombre (`quote(name, safe='')`, anti
+# path-traversal/SSRF, §4.1) ANTES de delegar el transporte real en `core/net`. La capacidad
+# de RED de `urllib` (`urllib.request`/`urllib.error`) sigue prohibida fuera de `core/net`.
+_NETWORK_PARSE_ONLY = frozenset({"urllib.parse"})
 
 # SDKs de terceros / LLM cuya mera importacion violaria NFR-Priv.2 / NFR-Costo.1.
 _FORBIDDEN_THIRD_PARTY = frozenset(
@@ -249,6 +266,10 @@ def find_network_import_violations(source: str, *, in_core_net: bool) -> list[st
     tree = ast.parse(source)
     violations: list[str] = []
     for name, line in _imported_top_modules(tree):
+        # `urllib.parse` (quote/urlsplit) es parsing puro de strings, sin capacidad de red:
+        # se exime aqui (H4-T07 lo usa en el adapter para el url-encode anti-traversal).
+        if any(_matches_module(name, mod) for mod in _NETWORK_PARSE_ONLY):
+            continue
         if any(_matches_module(name, mod) for mod in _NETWORK_MODULES):
             violations.append(f"import de red '{name}' fuera de core/net en linea {line}")
     return violations

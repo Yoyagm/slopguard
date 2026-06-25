@@ -120,12 +120,17 @@ class _ScanContext:
     corrida, no por-dep: `now_epoch` se lee UNA vez (NFR-Det.1), `top_n` se carga una
     vez, y `threat_intel` es el resultado del batch de Capa 3 intercalado (§4.1). Frozen
     e inmutable: el bucle por-dep no puede mutar el entorno compartido.
+
+    `ecosystem_id` (H4-T33, ADR-6 pto 6): propagado desde `adapter.ecosystem_id` para
+    que `_apply_layer4` lo reenvie a `resolve_layer4`/`evaluate` y selle la clave L4
+    por ecosistema (aislamiento npm/PyPI, NFR-Seg.3).
     """
 
     config: Config
     now_epoch: float
     top_n: TopNDataset
     threat_intel: dict[str, ThreatIntelResult]
+    ecosystem_id: str = "pypi"
 
 
 def scan_manifest(
@@ -284,6 +289,7 @@ def _scan(
         now_epoch=now_epoch,
         top_n=adapter.load_top_n(),
         threat_intel=threat_intel,
+        ecosystem_id=adapter.ecosystem_id,  # H4-T33: sella la clave L4 por ecosistema
     )
     results = tuple(
         _evaluate_dependency(dep, outcomes.get(dep.name), ctx) for dep in deps
@@ -334,7 +340,9 @@ def _apply_layer4(
         (dep.name, build_context(dep.name, result, outcomes.get(dep.name), now_epoch=ctx.now_epoch))
         for dep, result in gray
     ]
-    assessments = resolve_layer4(evaluator, cache, items, ctx.config, now=ctx.now_epoch)
+    assessments = resolve_layer4(
+        evaluator, cache, items, ctx.config, ctx.ecosystem_id, now=ctx.now_epoch
+    )
     augmented = {
         dep.name: _augment_with_layer4(dep, result, assessments.get(dep.name), ctx.config)
         for dep, result in gray

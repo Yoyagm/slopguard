@@ -56,7 +56,13 @@ def _load_key(settings: Settings) -> bytes:
     - debe ser base64 estándar válido;
     - debe decodificar a EXACTAMENTE 32 bytes (AES-256).
     """
-    raw = settings.encryption_key
+    secret = settings.encryption_key
+    if secret is None:
+        raise CryptoKeyError(
+            "encryption_key no configurada: el cifrado en reposo no puede operar (fail-closed)."
+        )
+    # SecretStr: el valor solo se desempaqueta aquí, en el borde que lo decodifica.
+    raw = secret.get_secret_value()
     if not raw:
         raise CryptoKeyError(
             "encryption_key no configurada: el cifrado en reposo no puede operar (fail-closed)."

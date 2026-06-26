@@ -15,7 +15,7 @@ from __future__ import annotations
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Default de desarrollo del secreto de sesión: JAMÁS debe usarse en producción.
@@ -37,19 +37,39 @@ class Settings(BaseSettings):
     database_url: str | None = None
     redis_url: str | None = None
 
-    # Sesión y cifrado (Olas 0-1).
-    session_secret: str = _INSECURE_SESSION_SECRET
-    encryption_key: str | None = None  # clave AEAD base64 para cifrado en reposo (H5-T06)
+    # Sesión y cifrado (Olas 0-1). SecretStr: enmascara el valor en repr/str/logs por
+    # construcción (NFR-Seg-3, defensa en profundidad). El valor solo se desempaqueta en el
+    # borde que lo consume vía `.get_secret_value()`.
+    session_secret: SecretStr = SecretStr(_INSECURE_SESSION_SECRET)
+    encryption_key: SecretStr | None = None  # clave AEAD base64 para cifrado en reposo (H5-T06)
 
     # Front (CORS).
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    # GitHub OAuth + App + webhooks (Olas 1/4/5).
+    # Scan Service (Ola 2, ADR-3): frontera in-process con el motor.
+    # Timeout de envoltura (segundos): red de seguridad de PROCESO sobre `engine.scan_*`,
+    # NO un reemplazo del fail-closed del motor. Si salta → error saneado (502/504),
+    # nunca un reporte limpio sintético (R3.5/R9.1). Debe ser holgadamente mayor que el
+    # `timeout_total_por_dep_s` (30s) del motor para no cortar escaneos legítimos: solo
+    # ataja casos patológicamente largos.
+    scan_wrapper_timeout_s: float = 120.0
+    # Límites de entrada (H5-T17, R3.3): el SaaS rechaza con 422 ANTES del parseo completo.
+    # Los defaults coinciden con los del motor (`Config.max_manifest_bytes` / `Config.max_deps`),
+    # pero son configurables por entorno para poder endurecerlos en producción sin tocar el core.
+    scan_max_manifest_bytes: int = 5_000_000
+    scan_max_deps: int = 5000
+    # Conmutador server-side de Capa 4 (R7.2): la Capa 4 (LLM) se activa SOLO si hay clave.
+    # Sin clave, el motor devuelve `llm_assessment=null` por construcción. El valor NUNCA
+    # se loguea ni viaja al cliente (NFR-Seg-3).
+    anthropic_api_key: SecretStr | None = None
+
+    # GitHub OAuth + App + webhooks (Olas 1/4/5). Los IDs públicos quedan como str; los
+    # secretos van como SecretStr (enmascarados en repr/str/logs, NFR-Seg-3).
     github_client_id: str | None = None
-    github_client_secret: str | None = None
+    github_client_secret: SecretStr | None = None
     github_app_id: str | None = None
-    github_app_private_key: str | None = None
-    github_webhook_secret: str | None = None
+    github_app_private_key: SecretStr | None = None
+    github_webhook_secret: SecretStr | None = None
 
     @property
     def is_production(self) -> bool:
@@ -73,12 +93,13 @@ class Settings(BaseSettings):
 
     def _require_strong_session_secret(self) -> None:
         """`session_secret` no puede ser el default de dev ni demasiado corto en producción."""
-        if self.session_secret == _INSECURE_SESSION_SECRET:
+        secret = self.session_secret.get_secret_value()
+        if secret == _INSECURE_SESSION_SECRET:
             raise ValueError(
                 "session_secret usa el default de desarrollo en producción: "
                 "configure un secreto propio (fail-closed)."
             )
-        if len(self.session_secret) < _MIN_SESSION_SECRET_LEN:
+        if len(secret) < _MIN_SESSION_SECRET_LEN:
             raise ValueError(
                 f"session_secret es demasiado corto en producción: exige "
                 f">= {_MIN_SESSION_SECRET_LEN} caracteres (fail-closed)."

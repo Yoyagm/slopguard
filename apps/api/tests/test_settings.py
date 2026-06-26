@@ -106,7 +106,8 @@ def test_environment_se_lee_de_variable_de_entorno(monkeypatch: pytest.MonkeyPat
 def test_development_arranca_con_defaults_inseguros() -> None:
     # En desarrollo el validador es no-op: los defaults locales deben seguir siendo válidos.
     settings = Settings()
-    assert settings.session_secret == "dev-insecure-change-me"
+    # SecretStr: el valor se compara vía .get_secret_value(); su repr/str va enmascarado.
+    assert settings.session_secret.get_secret_value() == "dev-insecure-change-me"
     assert settings.encryption_key is None
     assert settings.cors_origins == ["http://localhost:3000"]
 
@@ -173,3 +174,32 @@ def test_desarrollo_permite_cors_localhost_http() -> None:
     # En development el CORS http://localhost no se valida (flujo local sin TLS).
     settings = Settings(environment="development", cors_origins=["http://localhost:3000"])
     assert settings.cors_origins == ["http://localhost:3000"]
+
+
+# --- Enmascaramiento de secretos (NFR-Seg-3: defensa en profundidad) -----------------------
+
+
+def test_secretos_no_se_filtran_en_repr() -> None:
+    # SecretStr enmascara repr/str: un logger.debug(settings) o repr() no debe volcar el valor.
+    secret_marker = "x" * 48
+    leaky_key = _VALID_KEY_B64
+    settings = Settings(
+        environment="production",
+        session_secret=secret_marker,
+        encryption_key=leaky_key,
+        github_client_secret="gh-client-secret-marker",
+        github_app_private_key="gh-private-key-marker",
+        github_webhook_secret="gh-webhook-marker",
+        anthropic_api_key="sk-ant-marker",
+        cors_origins=["https://app.example.com"],
+    )
+    dumped = repr(settings) + str(settings)
+    for plaintext in (
+        secret_marker,
+        leaky_key,
+        "gh-client-secret-marker",
+        "gh-private-key-marker",
+        "gh-webhook-marker",
+        "sk-ant-marker",
+    ):
+        assert plaintext not in dumped

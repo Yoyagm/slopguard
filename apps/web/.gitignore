@@ -13,6 +13,13 @@
 # testing
 /coverage
 
+# playwright e2e (H5-T40): artefactos y storageState de sesión sembrada
+/test-results/
+/playwright-report/
+/blob-report/
+/e2e/.auth/
+.playwright-mcp/
+
 # next.js
 /.next/
 /out/

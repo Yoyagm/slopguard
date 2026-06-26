@@ -44,6 +44,28 @@ const sizeClasses: Record<ButtonSize, string> = {
   md: "px-4 py-2 text-sm gap-2",
 };
 
+/**
+ * Clases de apariencia del botón, SIN el elemento `<button>`. Sirve para dar pinta de botón a
+ * otro elemento interactivo (p.ej. un `<label>` que envuelve un input de archivo, donde no cabe un
+ * `<button>`). Una sola fuente de verdad para variantes/tamaños.
+ */
+export function buttonClasses(options?: {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  className?: string;
+}): string {
+  const { variant = "primary", size = "md", className } = options ?? {};
+  return cn(
+    "inline-flex items-center justify-center rounded-sg font-medium",
+    "transition-colors duration-200",
+    "cursor-pointer",
+    "focus-visible:outline-2 focus-visible:outline-sg-accent",
+    variantClasses[variant],
+    sizeClasses[size],
+    className,
+  );
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   {
     variant = "primary",
@@ -65,14 +87,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       disabled={isDisabled}
       aria-disabled={isDisabled}
       className={cn(
-        // Base
-        "inline-flex items-center justify-center rounded-sg font-medium",
-        "transition-colors duration-200",
-        "cursor-pointer",
-        "focus-visible:outline-2 focus-visible:outline-sg-accent",
-        // Variante y tamaño
-        variantClasses[variant],
-        sizeClasses[size],
+        buttonClasses({ variant, size }),
         // Estados deshabilitados
         isDisabled && "opacity-50 cursor-not-allowed pointer-events-none",
         className,

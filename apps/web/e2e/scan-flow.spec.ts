@@ -61,4 +61,26 @@ test.describe("escaneo on-demand → histórico (con sesión)", () => {
       page.getByRole("link", { name: /ver reporte/i }).first(),
     ).toBeVisible();
   });
+
+  test("cargar archivo por el <label> rellena el textarea (regresión botón inerte)", async ({
+    page,
+  }) => {
+    await page.goto("/scan");
+    const textarea = page.getByRole("textbox", { name: /contenido del manifiesto/i });
+    await expect(textarea).toHaveValue("");
+
+    // El <label> envuelve el input[type=file]: clicar el label abre el diálogo SIN un .click()
+    // programático (que Safari bloquea). Se verifica que el contenido del archivo llega al textarea.
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.getByText("Cargar archivo").click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: "reqs.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("requests==2.31.0\n"),
+    });
+
+    await expect(textarea).toHaveValue(/requests==2\.31\.0/);
+    await expect(page.getByText("reqs.txt")).toBeVisible();
+  });
 });

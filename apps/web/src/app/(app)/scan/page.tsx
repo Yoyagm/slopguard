@@ -13,7 +13,7 @@ import type { Scan, Repo, Ecosystem } from "@/lib/api/types";
 import { createScan, listRepos } from "@/lib/api/endpoints";
 import { ApiError } from "@/lib/api/client";
 import { ScanReport } from "@/components/report/ScanReport";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonClasses } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { Card } from "@/components/ui/Card";
 import {
@@ -151,8 +151,6 @@ interface InlinePanelProps {
 }
 
 function InlinePanel({ content, setContent, filename, setFilename }: InlinePanelProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -177,18 +175,26 @@ function InlinePanel({ content, setContent, filename, setFilename }: InlinePanel
 
   return (
     <div className="space-y-3">
-      {/* Upload de archivo */}
+      {/* Upload de archivo: un <label> nativo que envuelve el input ⇒ al clicarlo, el navegador
+          abre el diálogo SIN un .click() programático. Esto funciona en TODOS los navegadores
+          (incl. Safari, que bloquea el .click() programático sobre inputs ocultos). El input
+          queda sr-only pero accesible por teclado (recibe foco vía el label → focus-within). */}
       <div className="flex items-center gap-3 flex-wrap">
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          className="gap-2"
+        <label
+          className={cn(
+            buttonClasses({ variant: "secondary", size: "sm", className: "gap-2" }),
+            "focus-within:outline-2 focus-within:outline-sg-accent",
+          )}
         >
           <UploadIcon className="w-4 h-4" />
           Cargar archivo
-        </Button>
+          <input
+            type="file"
+            accept=".txt,.toml,.json,.lock"
+            className="sr-only"
+            onChange={(e) => void handleFileChange(e)}
+          />
+        </label>
 
         {filename && (
           <div className="flex items-center gap-2 text-xs text-sg-muted">
@@ -203,16 +209,6 @@ function InlinePanel({ content, setContent, filename, setFilename }: InlinePanel
             </button>
           </div>
         )}
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".txt,.toml,.json,.lock"
-          className="sr-only"
-          aria-hidden="true"
-          tabIndex={-1}
-          onChange={(e) => void handleFileChange(e)}
-        />
       </div>
 
       {/* Textarea */}

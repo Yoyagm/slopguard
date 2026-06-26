@@ -688,3 +688,14 @@ def test_forma_a_archivo_inexistente_es_error(tmp_path: Path) -> None:
     path = tmp_path / "no-existe.json"
     with pytest.raises(ManifestParseError, match="no-existe"):
         _parse(path)
+
+
+def test_forma_a_read_text_oserror_es_error(tmp_path: Path) -> None:
+    # Rama fail-closed de lectura (package_json.py:265-266): stat() pasa pero read_text()
+    # falla. Un DIRECTORIO lo reproduce sin mocks: stat() funciona (tamano pequeno, bajo el
+    # cap), read_text() lanza IsADirectoryError (subclase de OSError) => ManifestParseError
+    # saneado, sin stacktrace crudo. H4-T40 (auditoria): cierra el hueco de cobertura.
+    a_dir = tmp_path / "soy-un-directorio.json"
+    a_dir.mkdir()
+    with pytest.raises(ManifestParseError, match="error al leer"):
+        _parse(a_dir)

@@ -66,7 +66,7 @@ jobs:
         run: python -m pytest -q
 
   web:
-    name: Web · Lint · Tipos · Build
+    name: Web · Lint · Tipos · Tests · Build
     runs-on: ubuntu-latest
 
     steps:
@@ -97,6 +97,10 @@ jobs:
       - name: Typecheck (tsc --noEmit)
         working-directory: apps/web
         run: pnpm typecheck
+
+      - name: Tests (Vitest)
+        working-directory: apps/web
+        run: pnpm test
 
       - name: Build (next build)
         working-directory: apps/web

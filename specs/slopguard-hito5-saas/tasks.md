@@ -1,0 +1,68 @@
+# Plan de Tareas: SlopGuard SaaS (Hito 5)
+
+Desglose rastreable derivado de `requirements.md` (EARS R1-R9 + NFR) y `design.md` (ADRs 1-5).
+Cada tarea es pequeña y verificable. Rol: `developer` (rutina) / `developer-complex` (alto riesgo:
+seguridad, async, fronteras, UX núcleo). Las skills se inyectan por tarea (el agente lee los
+`SKILL.md` correspondientes). Estado inicial: TODO.
+
+## Olas (orden por dependencias)
+- **Ola 0** — Cimientos: monorepo, datos (Postgres/Alembic), secretos (AEAD), Docker, IaC, CI.
+- **Ola 1** — Auth GitHub OAuth + sesión.
+- **Ola 2** — Scan Service (motor in-process, fail-closed).
+- **Ola 3** — Escaneo on-demand + histórico (API).
+- **Ola 4** — GitHub App + repos.
+- **Ola 5** — Webhook PR → escaneo async (Arq+Redis) → Check Run + comentario (no bloqueante).
+- **Ola 6** — Frontend Next.js (UI limpia/profesional) — `developer-complex` + UI/UX senior.
+- **Ola 7** — E2E, seguridad, CI/CD, despliegue, compuertas, cierre.
+
+Aristas intra-ola relevantes: T15→T16/T17; T26→T27→T28; T31→{T32..T35}; T34 depende de T16 (DTO).
+**Recomendación de secuencia:** Olas 0-3 entregan el **dashboard usable** (hito demostrable) antes
+de la GitHub App (Olas 4-5). El front (Ola 6) puede empezar en paralelo a la Ola 3 contra mocks.
+
+| ID | Tarea | Rol | Skills | Depende de | Criterios de aceptación | Estado |
+|----|-------|-----|--------|------------|-------------------------|--------|
+| H5-T01 | **Layout del monorepo**: `apps/api` (FastAPI) + `apps/web` (Next.js) + `src/slopguard` intacto; tooling (uv/poetry para api, pnpm para web); scripts de dev. | developer-complex | architecture, clean-code | — | `src/slopguard` sin cambios y su gate sigue verde; `apps/api` y `apps/web` arrancan; un solo repo, builds independientes (NFR-Arq.1). | TODO |
+| H5-T02 | **Frontera de imports** del monorepo: import-linter ampliado (web→api→motor; el motor NO importa el SaaS). | developer-complex | architecture | T01 | Contrato import-linter nuevo `kept`; un import motor→api falla el linter (NFR-Arq.2). | TODO |
+| H5-T03 | **Esqueleto FastAPI**: app factory, settings (pydantic-settings), `/health`, CORS, logging estructurado. | developer | clean-code, api-design-reviewer | T01 | `/health` responde 200; settings desde env; mypy estricto en `apps/api`. | TODO |
+| H5-T04 | **Modelo de datos Postgres** (SQLAlchemy): `users`, `github_installations`, `repos`, `scans`, `scan_results` según design §3.1, con relaciones e índices §3.2. | developer-complex | database-schema-designer, clean-code | T03 | Modelos tipados; relaciones y unicidades correctas; campos a cifrar marcados (R8.1). | TODO |
+| H5-T05 | **Migración inicial Alembic** idempotente + bootstrap de DB local (docker-compose Postgres). | developer | database-designer | T04 | `alembic upgrade head` crea el esquema; `downgrade` limpio; reaplicar es no-op (R8.3). | TODO |
+| H5-T06 | **Custodia de secretos (AEAD)**: utilidades de cifrado en reposo de tokens + gestión de clave por env; helper de no-fuga. | developer-complex | senior-secops, cloud-security | T03 | Round-trip cifra/descifra; clave solo desde env; token jamás en texto plano en DB/logs (NFR-Seg.3, R8.2). | TODO |
+| H5-T07 | **Docker** para API + Worker (mismo contenedor, procesos separados) + docker-compose (api, worker, postgres, redis). | developer | ci-cd-pipeline-builder | T03 | `docker compose up` levanta el stack local; api y worker como procesos distintos (ADR-1/ADR-2). | TODO |
+| H5-T08 | **IaC**: Terraform para Postgres (Neon) + Redis (Upstash) + proyecto Vercel; runtime API/worker en `render.yaml` (o `fly.toml`). | developer-complex | ci-cd-pipeline-builder, cloud-security | T07 | `terraform plan` válido y sin secretos en estado; recursos parametrizados por entorno; runtime nativo declarado (ADR-1). | TODO |
+| H5-T09 | **CI** del monorepo: pipeline `apps/api` (ruff/mypy/pytest) y `apps/web` (lint/typecheck/build); el gate del core slopguard se preserva. | developer | ci-cd-pipeline-builder | T03 | CI verde por paquete; fallo en cualquiera rompe el merge; el gate del core no regresiona (NFR-Cal). | TODO |
+| H5-T10 | **Tests de cimientos**: migraciones up/down, `/health`, round-trip AEAD. | tester | tdd-guide | T05, T06 | Suite verde; migración reversible verificada; AEAD probado. | TODO |
+| H5-T11 | **Flujo OAuth GitHub**: login→`state` single-use en Redis→callback valida `state`→upsert `users`→sesión. | developer-complex | senior-security, cloud-security | T06, T05 | Login redirige a GitHub; callback con state válido abre sesión (R1.1/R1.2); `state` no coincide→rechazo (R1.3). | TODO |
+| H5-T12 | **Sesión + guard**: cookie httpOnly de servidor; dependencia `require_user` para rutas protegidas. | developer | senior-security | T11 | Ruta protegida sin sesión→redirige a login; sesión válida→acceso; cookie httpOnly/secure (ADR-4). | TODO |
+| H5-T13 | **Token de GitHub cifrado** (AEAD) por usuario; logout invalida sesión y olvida token. | developer | senior-secops | T11, T06 | Token en DB cifrado, nunca al cliente (R1.5); logout limpia servidor (R1.4). | TODO |
+| H5-T14 | **Tests auth**: state mismatch→rechazo; token nunca en cliente/logs; logout; CSRF. | tester | tdd-guide, security-pen-testing | T12, T13 | Cubre R1.1-R1.5; un test prueba que el token no aparece en ninguna respuesta/log. | TODO |
+| H5-T15 | **Scan Service** (frontera única del motor): envuelve `engine.scan_manifest`/`scan_stdin` en threadpool con **timeout de envoltura fail-closed**. | developer-complex | senior-security, clean-code | T03 | Llama el motor in-process; timeout→error saneado, **nunca** reporte limpio sintético (ADR-3, R7.3). | TODO |
+| H5-T16 | **Mapeo `ScanReport`→`ScanDTO`** (1:1, `schema_version` 1.2, incluye `ecosystem`, señales por capa). | developer | api-design-reviewer, clean-code | T15 | DTO fiel al `ScanReport` real; JSON crudo disponible (R4.1/R4.3). | TODO |
+| H5-T17 | **Validación de límites + ecosistema**: tamaño/nº deps→422; autodetección/override de ecosistema. | developer | clean-code | T15 | Exceso de límites→422 sin parseo completo (R3.3); override gana a autodetección (R3.2). | TODO |
+| H5-T18 | **Tests Scan Service**: fail-closed en timeout; UNVERIFIABLE nunca CLEAN; DTO fiel; límites→422. | tester | tdd-guide, adversarial-reviewer | T16, T17 | Cubre R3.3/R3.4/R7.3; un test fuerza timeout y verifica que no hay veredicto limpio. | TODO |
+| H5-T19 | **Endpoint POST `/scan`** (on-demand): pegar/subir manifiesto o repo+ruta→Scan Service→persiste `scans`+`scan_results`. | developer | api-design-reviewer | T16, T05 | Devuelve `ScanDTO` y persiste (R3.1, R5.1); errores saneados (R9.2). | TODO |
+| H5-T20 | **Endpoints histórico**: GET `/scans` (lista + filtros repo/ecosistema) y GET `/scans/{id}` (detalle), aislados por usuario. | developer | api-design-reviewer | T19 | Lista ordenada desc + filtros (R5.2); un usuario no ve escaneos de otro (R5.3). | TODO |
+| H5-T21 | **Tests on-demand + histórico**: persistencia, aislamiento por usuario, filtros, estado vacío. | tester | tdd-guide | T20 | Cubre R5.1-R5.4; test de aislamiento cross-user. | TODO |
+| H5-T22 | **GitHub App + instalación**: configuración de App (mínimo privilegio) + flujo de instalación + webhook `installation`→persiste `github_installations`/`repos`. | developer-complex | senior-security, cloud-security | T13 | Instalación persiste repos accesibles (R2.1/R2.2); permisos mínimos (NFR-Seg.4). | TODO |
+| H5-T23 | **Installation token** (renovación, cifrado) + GET `/repos` (solo accesibles). | developer | senior-secops | T22 | Token renovado bajo demanda y cifrado (R2.5); `/repos` lista solo accesibles (R2.3). | TODO |
+| H5-T24 | **Lectura de manifiesto de repo** (contents API) para escaneo on-demand desde repo conectado. | developer | api-design-reviewer | T23, T19 | Lee el manifiesto del repo/ref y lo pasa al Scan Service; fallo→"repo no disponible" accionable (R2.5). | TODO |
+| H5-T25 | **Tests GitHub App**: instalación persiste; desinstalación no borra histórico; repos solo accesibles; token renovado. | tester | tdd-guide | T23 | Cubre R2.1-R2.5; test de desinstalación conserva `scans`. | TODO |
+| H5-T26 | **Webhook receiver**: verifica **HMAC** sobre raw body (tiempo constante), responde **202**, encola job (Arq). | developer-complex | senior-security, security-pen-testing | T22, T07 | HMAC inválido→descartado sin efecto (R6.1); ack 202 rápido + encola (R9.3). | TODO |
+| H5-T27 | **Worker Arq**: consume job, identifica manifiestos cambiados del PR, escanea cada uno (Scan Service); **idempotencia por `head_sha`**. | developer-complex | senior-security, clean-code | T26, T15 | Reprocesar el mismo `head_sha` no duplica trabajo/efectos (ADR-2); escaneo por manifiesto cambiado (R6.2). | TODO |
+| H5-T28 | **Check Run + comentario** (upsert, **no bloqueante**): `conclusion` refleja severidad; comentario resumen; sin manifiestos→neutral. | developer | api-design-reviewer | T27 | Check + comentario publicados/actualizados sin duplicar (R6.2/R6.6); nunca *required*/bloqueante (R6.3); sin manifiestos→neutral (R6.4). | TODO |
+| H5-T29 | **Persistir escaneo de PR** en histórico (origen=PR, repo, head_sha). | developer | clean-code | T28, T19 | El escaneo de PR aparece en el histórico del usuario (R5.1). | TODO |
+| H5-T30 | **Tests webhook/worker**: HMAC inválido→descarta; ack 202; idempotencia head_sha; upsert no duplica; UNVERIFIABLE parcial; no bloqueante. | tester | tdd-guide, adversarial-reviewer | T28, T29 | Cubre R6.1-R6.6, R9.3; test de doble webhook mismo head_sha. | TODO |
+| H5-T31 | **Sistema de diseño** (tokens design §8: paleta semántica allow/warn/block, tipografía, dark "terminal/seguridad"), layout y theming. | developer-complex | senior-frontend, ui-design-system, ux-researcher-designer | T01 | Tokens y componentes base; identidad coherente con SlopGuard (NFR-UX.1). | TODO |
+| H5-T32 | **App shell + Auth UI**: login con GitHub, estados de sesión, routing protegido. | developer-complex | senior-frontend, ui-design-system | T31, T12 | Login funcional contra la API; rutas protegidas; estados claros (R1, NFR-UX.3). | TODO |
+| H5-T33 | **Dashboard de escaneo on-demand**: pegar/subir/seleccionar repo, lanzar, loading/empty/error cuidados. | developer-complex | senior-frontend, ux-researcher-designer | T31, T36 | Lanza escaneos y muestra estados (R3, NFR-UX.3). | TODO |
+| H5-T34 | **Visor de reporte que EXPLICA** veredictos: capas/señales, score, objetivo de typosquat, MAL-* destacado, toggle JSON crudo. | developer-complex | senior-frontend, ui-design-system, ux-researcher-designer | T31, T16 | Cada veredicto es legible y justificado (R4.1/R4.4, NFR-UX.3); JSON crudo conmutador (R4.3). | TODO |
+| H5-T35 | **Vista de histórico**: lista, filtros (repo/ecosistema), detalle, estado vacío con CTA. | developer-complex | senior-frontend | T31, T36 | Histórico navegable y filtrable (R5.2/R5.4). | TODO |
+| H5-T36 | **Cliente API tipado** (TypeScript): auth, errores saneados, DTOs alineados con `ScanDTO`. | developer | api-design-reviewer, clean-code | T16 | Cliente tipado estricto; maneja errores y sesión; tipos derivados del contrato. | TODO |
+| H5-T37 | **Accesibilidad + responsive**: WCAG AA (contraste, foco, teclado, ARIA), layouts responsive. | developer-complex | a11y-audit, senior-frontend | T34, T35 | Auditoría a11y sin violaciones AA en las vistas clave (NFR-UX.2). | TODO |
+| H5-T38 | **Tests de front**: visor de reporte, estados, accesibilidad básica. | tester | webapp-testing, tdd-guide | T37 | Componentes y estados cubiertos; checks a11y automatizados. | TODO |
+| H5-T39 | **Revisión de seguridad integral** (read-only): OAuth/CSRF, HMAC, cifrado de tokens, mínimo privilegio, no-fuga de secretos, fail-closed, rate limiting, entrada no confiable. | security-reviewer | security-pen-testing, senior-security, cloud-security | T30, T38 | Sin hallazgos 🔴/🟡 abiertos; NFR-Seg.1-5 verificados con evidencia. | TODO |
+| H5-T40 | **Tests E2E** del flujo crítico (login→escaneo→histórico; webhook→check) con Playwright. | tester | webapp-testing | T38, T30 | Flujos felices y de error verdes end-to-end. | TODO |
+| H5-T41 | **Revisión de código final** (api+web): tipado estricto, fronteras, smells, duplicación. | code-reviewer | code-reviewer, clean-code, api-design-reviewer | T39 | Sin 🔴/🟡; mypy/ruff y tsc/eslint limpios; fronteras de import intactas. | TODO |
+| H5-T42 | **Observabilidad + rate limiting**: logs estructurados sin secretos, healthchecks, límite de tasa en endpoints públicos. | developer | observability-designer, senior-secops | T39 | Logs sin secretos; rate limit activo; healthcheck del worker (NFR-Disp.2, NFR-Seg.5). | TODO |
+| H5-T43 | **Despliegue** al hosting elegido (Vercel + contenedor + Postgres/Redis) vía IaC; smoke test en vivo. | developer-complex | ci-cd-pipeline-builder, cloud-security | T08, T42 | Stack desplegado; smoke test del flujo on-demand y de un webhook real verde (ADR-1). | TODO |
+| H5-T44 | **Compuerta de calidad final** (adversarial): contra R1-R9 + NFR + non-goals §9; APROBAR/RECHAZAR. | critic | adversarial-reviewer, pr-review-expert | T43 | Veredicto explícito; fail-closed/no-bloqueante/aislamiento por usuario verificados. | TODO |
+| H5-T45 | **Cierre**: README del SaaS, runbook de despliegue/infra (Terraform), diagramas actualizados, aprendizajes en Basic Memory. | documenter | api-documentation-writer, runbook-generator, changelog-generator | T44 | Docs sincronizadas; runbook reproducible; CI/despliegue verde; aprendizajes persistidos. | TODO |

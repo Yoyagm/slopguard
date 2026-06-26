@@ -1,0 +1,9 @@
+{
+  "name": "@slopguard/web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Frontend Next.js del SaaS de SlopGuard (Hito 5). El scaffold Next.js real llega en la Ola 6.",
+  "scripts": {
+    "placeholder": "echo \"apps/web: el scaffold Next.js se crea en la Ola 6 (H5-T31/T32)\" && exit 0"
+  }
+}

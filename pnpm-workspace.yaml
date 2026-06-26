@@ -1,0 +1,5 @@
+# Monorepo SlopGuard (Hito 5 SaaS).
+# El motor de detección vive en `src/slopguard` (Python, zero-deps) y NO es parte del
+# workspace de pnpm. Aquí solo se declaran los paquetes Node (el frontend).
+packages:
+  - "apps/web"

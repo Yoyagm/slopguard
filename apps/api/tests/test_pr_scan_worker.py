@@ -22,7 +22,7 @@ import uuid
 from typing import cast
 
 import pytest
-from slopguard.core import ScanReport, ScanSummary
+from slopguard.core import ErrorCategory, ScanReport, ScanSummary
 
 from app.github_app.contents_client import FakeGitHubContentsClient
 from app.github_app.installation_repo import (
@@ -140,6 +140,30 @@ def _unverifiable_report() -> ScanReport:
     return _report(_summary(total=1, unverifiable=1))
 
 
+def _error_report() -> ScanReport:
+    """Error-report del motor: manifiesto no parseable (o fallo de dataset/adaptador) ⇒
+    `error_category` poblado, summary EN CEROS y exit_code=3. Reproduce el caso real
+    `requirements.txt` con `>=` / `package.json` malformado. Fail-closed: debe degradar a
+    UNVERIFIABLE (check NEUTRAL), NUNCA a success — un manifiesto no escaneado no es "limpio"."""
+    summary = ScanSummary(
+        total=0,
+        allow=0,
+        warn=0,
+        block=0,
+        unverifiable=0,
+        llm_unavailable=0,
+        exit_code=3,
+    )
+    return ScanReport(
+        schema_version="1.2",
+        tool_version="0.8.0",
+        ecosystem="pypi",
+        summary=summary,
+        results=(),
+        error_category=ErrorCategory.MANIFEST_PARSE,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures de entorno: instalación sembrada + job + contents client
 # ---------------------------------------------------------------------------
@@ -188,6 +212,9 @@ def job() -> PrScanJob:
         (_allow_report, CONCLUSION_SUCCESS),
         (_warn_report, CONCLUSION_NEUTRAL),
         (_unverifiable_report, CONCLUSION_NEUTRAL),
+        # Fail-closed (regresión H5-T44): un error-report del motor (manifiesto no parseable)
+        # NUNCA debe pintar el PR en verde; degrada a neutral.
+        (_error_report, CONCLUSION_NEUTRAL),
         (_block_report, CONCLUSION_FAILURE),
     ],
 )

@@ -46,6 +46,10 @@ _RANK_UNVERIFIABLE = 1
 _RANK_WARN = 2
 _RANK_BLOCK = 3
 
+# Exit code que el motor (`aggregate_exit_code`) asigna a un error-report degradado
+# (manifiesto no parseable, fallo de dataset/adaptador…): veredicto NO concluyente.
+_ENGINE_ERROR_EXIT_CODE = 3
+
 
 @dataclass(frozen=True, slots=True)
 class ManifestOutcome:
@@ -62,7 +66,17 @@ def _dto_rank(dto: ScanDTO) -> int:
         return _RANK_BLOCK
     if summary.warn > 0:
         return _RANK_WARN
-    if summary.unverifiable > 0:
+    # Fail-closed: un error-report del motor (manifiesto no parseable, fallo de dataset/adaptador…)
+    # llega con `error_category` poblado y summary en ceros — un resultado NO concluyente que JAMÁS
+    # debe pintarse "limpio" (allow → check verde). Se espeja `aggregate_exit_code` del motor
+    # (error_category ⇒ exit 3): degrada a UNVERIFIABLE como mínimo, igual que un manifiesto que
+    # no se pudo bajar. Sin esto, un `requirements.txt` con `>=` o un `package.json` malformado
+    # pintaban el PR en verde sin escanearse (fail-open).
+    if (
+        summary.unverifiable > 0
+        or dto.error_category is not None
+        or summary.exit_code == _ENGINE_ERROR_EXIT_CODE
+    ):
         return _RANK_UNVERIFIABLE
     return _RANK_ALLOW
 
@@ -85,6 +99,10 @@ def _summarize_outcome(outcome: ManifestOutcome) -> str:
     """Una línea del comentario: solo nombre del manifiesto + veredicto (sin exponer contenido)."""
     if outcome.dto is None:
         return f"- `{outcome.path}` — no verificable (UNVERIFIABLE)"
+    if outcome.dto.error_category is not None:
+        # El motor no pudo escanear el manifiesto (p.ej. no parseable): no verificable, no "limpio".
+        # `error_category` es un código fijo del motor, no contenido del manifiesto (sin fuga).
+        return f"- `{outcome.path}` — no verificable (error: {outcome.dto.error_category})"
     s = outcome.dto.summary
     return (
         f"- `{outcome.path}` — {s.total} deps · "

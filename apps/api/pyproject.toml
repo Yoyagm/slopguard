@@ -26,6 +26,7 @@ dependencies = [
   "httpx>=0.27",          # cliente async para hablar con GitHub OAuth/API (H5-T11)
   "redis>=5",             # state OAuth single-use (GETDEL) + sesión de servidor (H5-T11, ADR-4)
   "PyJWT>=2.8",           # firma JWT RS256 para GitHub App installation token (H5-T23, R2.5)
+  "arq>=0.26",            # cola/worker async (Redis) para escaneo de PR fuera del ack (H5-T26/T27, ADR-2)
 ]
 
 [project.optional-dependencies]

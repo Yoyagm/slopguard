@@ -35,7 +35,7 @@ superficie de ataque innecesaria:
 |---|---|---|
 | **Installation** | `app/api/webhooks.py::_handle_installation` | Ola 4 (T22): upsert de instalación + repos; `deleted`/`suspend` cambian `status` sin borrar histórico (R2.4). |
 | **Installation repositories** | `app/api/webhooks.py::_handle_installation_repositories` | Ola 4 (T22): sincroniza repos `added`/`removed`. |
-| **Pull request** | `app/api/webhooks.py::_handle_pull_request` | Reconocido (ack 202); el dispatch al worker async es de la **Ola 5** (T26+). |
+| **Pull request** | `app/api/webhooks.py::_handle_pull_request` | Ola 5 (T26): `opened`/`synchronize`/`reopened` encolan el escaneo (Arq) y se hace ack 202; el worker (`app/worker/pr_scan.py`) baja los manifiestos del diff, escanea y publica Check Run + comentario (no bloqueante). |
 
 NO suscribir a: `push`, `release`, `issues`, `issue_comment`, `workflow_run`, etc.
 

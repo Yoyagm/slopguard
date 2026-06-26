@@ -26,6 +26,11 @@ EVENT_HEADER = "X-GitHub-Event"
 # "owner/repo\n" (CRLF injection); \Z exige el fin absoluto de la cadena.
 _FULL_NAME_RE = re.compile(r"\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
+# `head_sha` legítimo = hash hex de commit (SHA-1 de 40 o SHA-256 de 64). Se interpola como `ref`
+# al pedir el manifiesto a la Contents API, así que lo restringimos a hex puro en el borde: un
+# valor anómalo ('main', '../', query strings) lo rechazamos aquí (fail-closed, anti path/SSRF).
+_SHA_RE = re.compile(r"\A[0-9a-fA-F]{40}\Z|\A[0-9a-fA-F]{64}\Z")
+
 # Acciones de `installation` que activan/desactivan la instalación. `suspend`/`unsuspend` y
 # `deleted` NUNCA borran histórico (R2.4): el router las traduce a un cambio de `status`.
 INSTALL_ACTION_DELETED = "deleted"
@@ -82,6 +87,14 @@ def _require_full_name(value: object, field: str) -> str:
     return text
 
 
+def _require_sha(value: object, field: str) -> str:
+    """Exige un SHA de commit hex (40/64). Anti path/SSRF al usarse como `ref` en Contents API."""
+    text = _require_str(value, field)
+    if not _SHA_RE.match(text):
+        raise MalformedEventError(f"campo {field!r} no es un SHA de commit válido")
+    return text
+
+
 def _parse_repo(raw: object) -> RepoData:
     """Parsea una entrada de `repositories[]` (id, full_name, private)."""
     repo = _require_dict(raw, "repository")
@@ -128,6 +141,39 @@ def parse_installation_event(payload: dict[str, object]) -> tuple[str, Installat
         repos=_parse_repo_list(payload.get("repositories"), "repositories"),
     )
     return action, data
+
+
+# Actions de `pull_request` que disparan un (re)escaneo: nuevo PR, push al PR, reapertura.
+PR_ACTIONS_TO_SCAN = frozenset({"opened", "synchronize", "reopened"})
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestEvent:
+    """Datos mínimos de un evento `pull_request` para encolar el escaneo (Ola 5, T26)."""
+
+    action: str
+    installation_id: int
+    github_repo_id: int
+    repo_full_name: str
+    pr_number: int
+    head_sha: str
+
+
+def parse_pull_request_event(payload: dict[str, object]) -> PullRequestEvent:
+    """Parsea un evento `pull_request`. Lanza `MalformedEventError` si falta algún campo clave."""
+    action = _require_str(payload.get("action"), "action")
+    pull_request = _require_dict(payload.get("pull_request"), "pull_request")
+    head = _require_dict(pull_request.get("head"), "pull_request.head")
+    repository = _require_dict(payload.get("repository"), "repository")
+    installation = _require_dict(payload.get("installation"), "installation")
+    return PullRequestEvent(
+        action=action,
+        installation_id=_require_int(installation.get("id"), "installation.id"),
+        github_repo_id=_require_int(repository.get("id"), "repository.id"),
+        repo_full_name=_require_full_name(repository.get("full_name"), "repository.full_name"),
+        pr_number=_require_int(pull_request.get("number"), "pull_request.number"),
+        head_sha=_require_sha(head.get("sha"), "pull_request.head.sha"),
+    )
 
 
 def parse_installation_repositories_event(

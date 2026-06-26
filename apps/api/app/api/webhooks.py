@@ -37,9 +37,11 @@ from ..github_app.deps import (
 from ..github_app.events import (
     INSTALL_ACTION_DELETED,
     INSTALL_ACTION_SUSPEND,
+    PR_ACTIONS_TO_SCAN,
     MalformedEventError,
     parse_installation_event,
     parse_installation_repositories_event,
+    parse_pull_request_event,
 )
 from ..github_app.installation_repo import (
     STATUS_REVOKED,
@@ -49,6 +51,8 @@ from ..github_app.installation_repo import (
 )
 from ..security.webhook_signature import verify_signature
 from ..settings import Settings, get_settings
+from ..worker.deps import get_job_queue
+from ..worker.jobs import JobQueue, PrScanJob
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,7 @@ SettingsDep = Annotated[Settings, Depends(_settings_dep)]
 InstallationRepoDep = Annotated[
     InstallationRepository, Depends(get_installation_repository)
 ]
+JobQueueDep = Annotated[JobQueue, Depends(get_job_queue)]
 
 
 class _BodyTooLargeError(Exception):
@@ -116,6 +121,7 @@ async def github_webhook(
     request: Request,
     settings: SettingsDep,
     installations: InstallationRepoDep,
+    job_queue: JobQueueDep,
     signature: SignatureHeader = None,
     event: EventHeader = None,
 ) -> Response:
@@ -151,7 +157,9 @@ async def github_webhook(
         logger.warning("Webhook con firma válida pero cuerpo no-JSON; ignorado.")
         return _accepted()
 
-    return await _dispatch(event=event, payload=payload, installations=installations)
+    return await _dispatch(
+        event=event, payload=payload, installations=installations, job_queue=job_queue
+    )
 
 
 async def _dispatch(
@@ -159,6 +167,7 @@ async def _dispatch(
     event: str | None,
     payload: dict[str, object],
     installations: InstallationRepository,
+    job_queue: JobQueue,
 ) -> Response:
     """Despacha por tipo de evento. Eventos desconocidos ⇒ ack 202 sin efecto (no ruido)."""
     if event == "installation":
@@ -166,7 +175,7 @@ async def _dispatch(
     if event == "installation_repositories":
         return await _handle_installation_repositories(payload, installations)
     if event == "pull_request":
-        return _handle_pull_request()
+        return await _handle_pull_request(payload, job_queue)
     if event == "ping":
         # GitHub envía `ping` al crear el webhook: ack benigno.
         logger.info("Webhook ping recibido (verificación de endpoint).")
@@ -264,16 +273,44 @@ async def _handle_installation_repositories(
     return _accepted()
 
 
-def _handle_pull_request() -> Response:
-    """`pull_request`: PREPARADO para la Ola 5. Hoy solo ack, NO encola el escaneo.
+async def _handle_pull_request(
+    payload: dict[str, object], job_queue: JobQueue
+) -> Response:
+    """`pull_request`: encola el escaneo async para opened/synchronize/reopened y ack 202 (R9.3).
 
-    El dispatch al worker async (Arq+Redis) con `{repo, pr, head_sha, installation_id}` es de la
-    Ola 5 (T26+). Reconocemos el evento aquí para no devolver un 404 que haría a GitHub reintentar,
-    pero deliberadamente NO escaneamos ni encolamos nada en esta tarea.
+    El trabajo pesado (bajar manifiestos, escanear, publicar check) lo hace el worker fuera del
+    ciclo de request. Aquí solo encolamos lo mínimo. Un fallo de la cola NO rompe el ack: GitHub
+    no debe reintentar el webhook por un problema de infraestructura nuestro (se loguea).
     """
-    logger.info("Webhook pull_request reconocido; dispatch al worker pendiente (Ola 5).")
-    # TODO(Ola 5 / T26): verificar action (opened/synchronize/reopened), extraer
-    # {repo_full_name, pr_number, head_sha, installation_id} y encolar el job de escaneo.
+    try:
+        event = parse_pull_request_event(payload)
+    except MalformedEventError as exc:
+        logger.warning("Evento pull_request malformado: %s.", exc)
+        return _accepted()
+
+    if event.action not in PR_ACTIONS_TO_SCAN:
+        logger.info("pull_request/%s no requiere escaneo; ignorado.", event.action)
+        return _accepted()
+
+    job = PrScanJob(
+        installation_id=event.installation_id,
+        repo_full_name=event.repo_full_name,
+        github_repo_id=event.github_repo_id,
+        pr_number=event.pr_number,
+        head_sha=event.head_sha,
+    )
+    try:
+        await job_queue.enqueue_pr_scan(job)
+        logger.info(
+            "Escaneo de PR encolado: repo %s PR #%d (%s).",
+            event.repo_full_name,
+            event.pr_number,
+            event.head_sha[:12],
+        )
+    except Exception:
+        logger.error(
+            "No se pudo encolar el escaneo del PR #%d; se hace ack igualmente.", event.pr_number
+        )
     return _accepted()
 
 

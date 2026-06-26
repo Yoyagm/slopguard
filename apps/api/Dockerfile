@@ -69,6 +69,12 @@ COPY --from=builder /build/src /app/src
 # Copia el código fuente del API.
 COPY --from=builder /build/apps/api/app /app/app
 
+# Migraciones Alembic: config + scripts de versión. Necesarios para el servicio one-shot
+# `migrate` del compose (entrypoint `migrate` → `alembic upgrade head`). `alembic.ini` usa
+# `script_location = alembic` relativo, por eso ambos cuelgan de WORKDIR /app.
+COPY --from=builder /build/apps/api/alembic.ini /app/alembic.ini
+COPY --from=builder /build/apps/api/alembic /app/alembic
+
 # Copia el entrypoint antes de cambiar al usuario no-root.
 COPY apps/api/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh

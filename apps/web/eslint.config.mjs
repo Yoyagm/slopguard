@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // E2E Playwright: fuera del lint de unidad (usa @playwright/test vía pnpm dlx, no instalado).
+    "e2e/**",
   ]),
 ]);
 

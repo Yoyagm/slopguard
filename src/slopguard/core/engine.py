@@ -80,8 +80,7 @@ from slopguard.core.threatintel.registry import get_threatintel_source
 from slopguard.core.threatintel.resolver import resolve_threatintel
 
 if TYPE_CHECKING:
-    from slopguard.core.adapters.npm import NpmAdapter
-    from slopguard.core.adapters.pypi import PypiAdapter
+    from slopguard.core.adapters.base import EcosystemAdapter
     from slopguard.core.dataset.top_n import TopNDataset
 
 # Version del esquema de salida (§2.4 Hito 2); sube 1.0 -> 1.1 de forma ADITIVA: se
@@ -222,7 +221,7 @@ def scan_dependencies(
 
 
 def _normalize_and_dedup(
-    adapter: PypiAdapter | NpmAdapter,
+    adapter: EcosystemAdapter,
     deps: Sequence[Dependency],
 ) -> tuple[Dependency, ...]:
     """Normaliza el nombre (PEP 503) y deduplica preservando el primer registro.
@@ -259,7 +258,7 @@ def _rename(dep: Dependency, name: str) -> Dependency:
 def _scan(
     deps: tuple[Dependency, ...],
     config: Config,
-    adapter: PypiAdapter | NpmAdapter,
+    adapter: EcosystemAdapter,
     *,
     use_cache: bool,
 ) -> ScanReport:

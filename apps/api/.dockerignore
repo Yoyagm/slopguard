@@ -1,0 +1,59 @@
+# .dockerignore para apps/api (contexto Docker = raíz del monorepo).
+#
+# Excluye artefactos que no deben entrar en la imagen:
+# - entornos virtuales y cachés de herramientas
+# - secretos locales (.env)
+# - artefactos de build y cobertura
+# - archivos de CI, docs y otros paquetes del monorepo que no se necesitan en runtime
+
+# ── Entornos virtuales ────────────────────────────────────────────────────────
+.venv/
+apps/api/.venv/
+apps/web/node_modules/
+
+# ── Cachés de herramientas ────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ── Secretos y configuración local ───────────────────────────────────────────
+.env
+apps/api/.env
+**/.env
+
+# ── Front (no necesario en la imagen API/Worker) ──────────────────────────────
+apps/web/
+
+# ── Docs, specs y CI ─────────────────────────────────────────────────────────
+docs/
+specs/
+eval/
+.github/
+.gitlab/
+Makefile
+
+# ── Markdown ──────────────────────────────────────────────────────────────────
+# Se excluyen los markdown por defecto, PERO se re-incluyen los README que
+# `pyproject.toml` declara como `readme = "README.md"`: setuptools los lee al
+# construir la metadata del paquete (`pip install` falla si faltan). Sin estas
+# negaciones, la regla `*.md` rompería el build de la imagen.
+*.md
+!README.md
+!apps/api/README.md
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Miscelánea ────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+.DS_Store

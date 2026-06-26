@@ -1,0 +1,82 @@
+name: SaaS CI
+
+# Gate de calidad del SaaS (Hito 5): apps/api + apps/web.
+# El gate del motor (slopguard-ci.yml) permanece intacto e independiente.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancela ejecuciones obsoletas del mismo ref para feedback rápido.
+concurrency:
+  group: saas-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API · Lint · Tipos · Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          # Cachea según ambos manifiestos: el motor (raíz) y el API.
+          cache-dependency-path: |
+            pyproject.toml
+            apps/api/pyproject.toml
+
+      - name: Instalar motor slopguard (editable + dev, zero-deps en runtime)
+        # `[dev]` del core trae import-linter, requerido por el paso lint-imports.
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev]"
+
+      - name: Instalar apps/api[dev]
+        working-directory: apps/api
+        run: pip install -e ".[dev]"
+
+      - name: lint-imports (frontera motor ↛ apps/api — NFR-Arq.2 / ADR-5)
+        # Verifica el contrato import-linter del core desde la raíz del repo: el motor
+        # NUNCA importa el SaaS (`app`). Una regresión de frontera DEBE romper el CI.
+        run: lint-imports
+
+      - name: Ruff (lint + reglas de seguridad S)
+        working-directory: apps/api
+        run: ruff check .
+
+      - name: Mypy (tipado estricto)
+        working-directory: apps/api
+        run: mypy app
+
+      - name: Pytest
+        working-directory: apps/api
+        run: python -m pytest -q
+
+  web:
+    name: Web · Placeholder
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTA: apps/web es aún un placeholder (sin scaffold Next.js ni pnpm-lock.yaml).
+      # Habilitar `cache: pnpm` o `pnpm install --frozen-lockfile` aquí rompe el job
+      # porque no hay lockfile que cachear/resolver. En la Ola 6 (H5-T31/T32), cuando
+      # exista el scaffold real + lockfile, este job pasa a: pnpm/action-setup ->
+      # setup-node (cache: pnpm) -> pnpm install --frozen-lockfile -> typecheck + build.
+      - name: Placeholder (scaffold Next.js llega en Ola 6, H5-T31)
+        working-directory: apps/web
+        run: echo "apps-web placeholder verde; scaffold Next.js y build real llegan en la Ola 6 (H5-T31/T32)"

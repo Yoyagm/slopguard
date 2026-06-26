@@ -45,11 +45,16 @@ def _require_github_credentials(settings: Settings) -> tuple[str, str]:
     """Devuelve (client_id, client_secret) o falla. Nunca incluye el secret en el error."""
     client_id = settings.github_client_id
     client_secret = settings.github_client_secret
-    if not client_id or not client_secret:
+    if not client_id or client_secret is None:
         raise AuthConfigError(
             "github_client_id / github_client_secret no configurados: login OAuth deshabilitado."
         )
-    return client_id, client_secret
+    secret_value = client_secret.get_secret_value()
+    if not secret_value:
+        raise AuthConfigError(
+            "github_client_id / github_client_secret no configurados: login OAuth deshabilitado."
+        )
+    return client_id, secret_value
 
 
 def callback_redirect_uri(settings: Settings) -> str:
@@ -91,7 +96,9 @@ def get_state_store() -> StateStore:
 def get_session_store() -> SessionStore:
     """Provider del store de sesión de servidor (Redis), firmado con `session_secret`."""
     settings = get_settings()
-    return RedisSessionStore(get_redis_client(), session_secret=settings.session_secret)
+    return RedisSessionStore(
+        get_redis_client(), session_secret=settings.session_secret.get_secret_value()
+    )
 
 
 def get_github_client() -> GitHubOAuthClient:

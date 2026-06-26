@@ -152,12 +152,15 @@ def test_redact_no_revela_el_secreto() -> None:
     assert "1234567890" not in label
 
 
-def test_redact_visible_limita_a_la_mitad() -> None:
-    secret = "abcdef"
-    # Pedir 5 visibles sobre un secreto de 6 se acota a la mitad (3).
-    label = redact(secret, visible=5)
-    assert label.endswith("def>")
-    assert "abc" not in label
+def test_redact_cero_revelacion_no_muestra_ningun_caracter() -> None:
+    # Cero-revelación por construcción: la etiqueta solo expone la longitud, jamás el contenido
+    # (el parámetro `visible` se eliminó a propósito; cualquier carácter revelado sería una fuga).
+    secret = "abcdefghij"
+    label = redact(secret)
+    assert label == f"<redacted:{len(secret)}>"
+    # Ningún sufijo del secreto debe aparecer en la etiqueta.
+    for end in range(1, len(secret) + 1):
+        assert secret[-end:] not in label
 
 
 def test_redact_vacio_y_none() -> None:

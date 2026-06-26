@@ -145,12 +145,33 @@ def decrypt_str(blob: bytes, *, associated_data: bytes | None = None) -> str:
         raise DecryptionError("el secreto descifrado no es texto UTF-8 válido.") from exc
 
 
-def redact(secret: str | bytes | None, *, visible: int = 0) -> str:
+def assert_no_token_leak(token: str, *haystacks: str) -> None:
+    """Verifica que `token` NO aparece en ninguno de los `haystacks` (respuestas / logs).
+
+    Lanza `AssertionError` con mensaje saneado (sin el token en claro) si hay fuga.
+    Uso exclusivo en tests: permite que el equipo añada esta verificación a cualquier
+    respuesta HTTP donde el token de GitHub no deba estar presente (R1.5, NFR-Seg-3).
+
+    Ejemplo::
+
+        assert_no_token_leak(raw_token, resp.text, *resp.headers.values())
+    """
+    for idx, haystack in enumerate(haystacks):
+        if token in haystack:
+            raise AssertionError(
+                f"Fuga de token detectada en haystack[{idx}]: "
+                f"token {redact(token)} aparece en la cadena. "
+                "El token NUNCA debe viajar al cliente ni a logs (R1.5, NFR-Seg-3)."
+            )
+
+
+def redact(secret: str | bytes | None) -> str:
     """Devuelve una etiqueta SEGURA para logs que NO revela el secreto (NFR-Seg-3).
 
-    Por defecto (`visible=0`) no expone ningún carácter, solo la longitud. Con `visible>0` muestra
-    los últimos `visible` caracteres como pista de identificación (p.ej. para distinguir tokens),
-    nunca más de la mitad del secreto. Para `None` o vacío devuelve `"<empty>"`.
+    Cero-revelación por construcción: NUNCA expone caracteres del secreto, solo su longitud
+    (suficiente para correlacionar logs sin filtrar material). Para `None` o vacío devuelve
+    `"<empty>"`. No admite un parámetro `visible`: cualquier carácter revelado de un token/secreto
+    es una fuga, y no existe un caso de uso real que lo justifique (se eliminó a propósito).
     """
     if secret is None:
         return "<empty>"
@@ -160,8 +181,4 @@ def redact(secret: str | bytes | None, *, visible: int = 0) -> str:
     if length == 0:
         return "<empty>"
 
-    # Nunca revelar más de la mitad: evita reconstruir secretos cortos a partir de pistas.
-    shown = max(0, min(visible, length // 2))
-    if shown == 0:
-        return f"<redacted:{length}>"
-    return f"<redacted:{length}:…{text[-shown:]}>"
+    return f"<redacted:{length}>"

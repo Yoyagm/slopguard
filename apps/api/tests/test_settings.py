@@ -163,6 +163,12 @@ def test_produccion_rechaza_cors_no_https() -> None:
         Settings(**_prod_kwargs(cors_origins=["http://app.example.com"]))  # type: ignore[arg-type]
 
 
+def test_produccion_rechaza_cors_vacio() -> None:
+    # Fail-closed (SEC): sin orígenes no hay base https para el redirect_uri de OAuth.
+    with pytest.raises(ValidationError, match="cors_origins"):
+        Settings(**_prod_kwargs(cors_origins=[]))  # type: ignore[arg-type]
+
+
 def test_desarrollo_permite_cors_localhost_http() -> None:
     # En development el CORS http://localhost no se valida (flujo local sin TLS).
     settings = Settings(environment="development", cors_origins=["http://localhost:3000"])

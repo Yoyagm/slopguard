@@ -25,8 +25,10 @@ ramificación `if ecosystem == "npm"` en `core.layers`/`core.scoring`).
 - **`NpmAdapter`**: allowlist `registry.npmjs.org` solo por instancia (nunca global), URL
   anti path-traversal (`quote(name, safe="")`), cap de respuesta → UNVERIFIABLE, charset
   fail-closed de un único núcleo, dataset npm top-8k embebido + verificado con SHA-256.
-- **`schema_version` 1.2**: añade el campo raíz **`ecosystem`** (`"pypi"`|`"npm"`) a la salida
-  JSON. Cambio estrictamente aditivo sobre 1.1.
+- **Salida JSON**: el campo raíz `ecosystem` (presente desde `schema_version` 1.0, hasta ahora
+  siempre `"pypi"`) toma ahora también el valor `"npm"`. **`schema_version` permanece `1.2`**
+  (introducido en el Hito 3 para `llm_assessment`): el Hito 4 no altera el esquema, solo el
+  dominio de valores de un campo ya existente.
 - **Threat-intel y Capa 4 por ecosistema**: OSV y watchlist aislados por **clave de caché Y
   validador de blob** (un escaneo npm jamás reutiliza un blob pypi del mismo nombre, y
   viceversa); `prompt_version` del LLM sube a `h4-v1`.

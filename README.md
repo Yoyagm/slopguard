@@ -14,7 +14,7 @@
 > metadatos sospechosos o **malicia confirmada** por inteligencia de amenazas comunitaria,
 > **antes** de instalarlos.
 
-**Estado:** Hito 3 completado (v0.3.0). 1631 tests verdes, gate de cobertura ≥90% global
+**Estado:** Hito 4 completado (v0.4.0). 2687 tests verdes, gate de cobertura ≥90% global
 y ≥95% en paquetes críticos. mypy strict, ruff (bandit S), import-linter (7 contratos),
 CI en GitHub Actions.
 
@@ -514,6 +514,9 @@ umbral_warn = 45
 --dl-max N                  Override del umbral Damerau-Levenshtein
 --no-layer3                 Desactiva la Capa 3 (modo solo-deterministas, sin red a OSV)
 --enable-watchlist          Activa la watchlist de alucinaciones depscope (opt-in)
+--enable-layer4             Activa la Capa 4 (evaluacion LLM, requiere ANTHROPIC_API_KEY)
+--no-layer4                 Desactiva la Capa 4 (prevalece sobre --enable-layer4)
+--llm-model ID              Modelo LLM de la Capa 4 (anula el del archivo de config)
 ```
 
 ---
@@ -560,8 +563,10 @@ Particularidades de npm:
 
 El campo `schema_version` garantiza compatibilidad hacia adelante; los cambios son
 **estrictamente aditivos**. Evolución: `1.0` → `1.1` (añade `advisories[]` y señales
-`layer:3`) → **`1.2`** (añade el campo de nivel raíz **`ecosystem`**: `"pypi"` | `"npm"`).
-Los campos previos no se modifican ni eliminan.
+`layer:3`) → **`1.2`** (añade `llm_assessment`/`is_llm_channel` de la Capa 4, Hito 3). El
+campo raíz **`ecosystem`** existe **desde 1.0** (hasta el Hito 3 siempre `"pypi"`); desde el
+Hito 4 puede valer también `"npm"` — es un cambio de **valor**, no de esquema (`schema_version`
+permanece `1.2`). Los campos previos no se modifican ni eliminan.
 
 Los campos estables por resultado son:
 

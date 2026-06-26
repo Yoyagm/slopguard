@@ -22,10 +22,15 @@ from typing import Any
 from fastapi.testclient import TestClient
 from slopguard.core import ScanReport, ScanSummary
 
-from app.api.scans import get_scan_repository, get_scan_service
+from app.api.scans import (
+    get_installation_repository,
+    get_scan_repository,
+    get_scan_service,
+)
 from app.auth.deps import get_session_store, get_user_repository
 from app.auth.guard import require_user
 from app.db.models import User
+from app.github_app.installation_repo import FakeInstallationRepository
 from app.main import create_app
 from app.scans.scan_repo import FakeScanRepository
 from app.services.scan import ScanErrorCategory, ScanServiceError
@@ -102,12 +107,17 @@ def _make_client(
     *,
     scan_service: Any = None,
     scan_repo: FakeScanRepository | None = None,
+    installation_repo: FakeInstallationRepository | None = None,
     authenticated: bool = True,
 ) -> tuple[TestClient, FakeScanRepository, FakeUserRepository, FakeUser | None]:
     """Construye un TestClient con dependencias dobladas.
 
     Devuelve (client, repo, user_repo, fake_user) para que los tests puedan
     inspeccionar lo que se persistió y el usuario que se resolvió.
+
+    `installation_repo` solo es necesario para los tests `source=repo`: si no se pasa, el
+    provider real fail-closed (sin DB en tests) NO se ejercita porque los escaneos inline no lo
+    construyen. Cuando se pasa, sustituimos el provider ÚNICO `get_installation_repository`.
     """
     app = create_app()
 
@@ -125,6 +135,8 @@ def _make_client(
     app.dependency_overrides[get_scan_repository] = lambda: fake_repo
     app.dependency_overrides[get_user_repository] = lambda: fake_user_repo
     app.dependency_overrides[get_session_store] = lambda: fake_session
+    if installation_repo is not None:
+        app.dependency_overrides[get_installation_repository] = lambda: installation_repo
 
     if authenticated and fake_user is not None:
         # Inyectamos el user directamente en require_user para no pasar por la cookie.
@@ -319,12 +331,17 @@ def test_invalid_ecosystem_returns_422_without_invoking_engine() -> None:
 
 
 # ---------------------------------------------------------------------------
-# source=repo → 422 documentado (T24)
+# source=repo → 422 REPO_UNAVAILABLE cuando el repo no existe para el usuario (T24)
 # ---------------------------------------------------------------------------
 
 
-def test_source_repo_returns_422_not_implemented() -> None:
-    client, _, _, _ = _make_client()
+def test_source_repo_unknown_repo_returns_422_unavailable() -> None:
+    """source=repo con repo_id desconocido → 422 REPO_UNAVAILABLE (T24 implementado).
+
+    Inyectamos un installation repo (vacío) para ejercitar el camino "repo no encontrado"; sin
+    él, el provider fail-closed devolvería 503 por falta de DB (otro escenario, ver fail-closed).
+    """
+    client, _, _, _ = _make_client(installation_repo=FakeInstallationRepository())
     resp = client.post(
         "/api/v1/scans",
         json={
@@ -336,7 +353,48 @@ def test_source_repo_returns_422_not_implemented() -> None:
     assert resp.status_code == 422
     data = resp.json()
     _assert_error_shape(data)
-    assert data["error"]["code"] == "REPO_SOURCE_NOT_IMPLEMENTED"
+    assert data["error"]["code"] == "REPO_UNAVAILABLE"
+
+
+def test_source_repo_sin_app_configurada_es_503_fail_closed() -> None:
+    """source=repo sin DB/GitHub App configurada ⇒ 503 (NO degrada a un doble de tests).
+
+    Regresión de MINOR 1+2: el provider de instalaciones ya NO cae a `FakeInstallationRepository`
+    en producción. Sin override (no hay `database_url` en el entorno de test), el provider ÚNICO
+    fail-closed lanza `AppConfigError`, que el handler global traduce a 503 saneado.
+    """
+    # OJO: NO inyectamos installation_repo → se usa el provider real fail-closed.
+    client, repo, _, _ = _make_client()
+    resp = client.post(
+        "/api/v1/scans",
+        json={
+            "source": "repo",
+            "repo_id": str(uuid.uuid4()),
+            "path": "requirements.txt",
+        },
+    )
+    assert resp.status_code == 503
+    body = resp.json()
+    # Cuerpo saneado: no filtra el motivo interno (nombres de campos de config) ni traza.
+    assert body["error"]["code"] == "GITHUB_APP_UNCONFIGURED"
+    assert "database_url" not in resp.text
+    assert "Traceback" not in resp.text
+    # Fail-closed: nada se persiste si la integración no está disponible.
+    assert repo.persisted_count == 0
+
+
+def test_inline_no_requiere_app_configurada() -> None:
+    """Un escaneo `source=inline` NO exige la GitHub App (no construye el installation repo).
+
+    Garantiza que el fail-closed del installation repo (source=repo) no contamina el camino
+    inline: sin override del installation repo y sin DB, el inline sigue devolviendo 200.
+    """
+    client, _, _, _ = _make_client()
+    resp = client.post(
+        "/api/v1/scans",
+        json={"source": "inline", "content": "requests==2.28.0\n"},
+    )
+    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------

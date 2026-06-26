@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     github_app_id: str | None = None
     github_app_private_key: SecretStr | None = None
     github_webhook_secret: SecretStr | None = None
+    # Tope del cuerpo del webhook público (DoS): rechazamos cuerpos sobre este límite ANTES de
+    # leerlos enteros en memoria o verificar el HMAC. Los payloads de GitHub son pequeños; 1 MiB
+    # es holgado. Configurable por entorno para endurecerlo (NFR-Seg, R6.1, ADR-4).
+    webhook_max_body_bytes: int = 1_048_576
 
     @property
     def is_production(self) -> bool:

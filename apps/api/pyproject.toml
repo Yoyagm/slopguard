@@ -25,6 +25,7 @@ dependencies = [
   "cryptography>=43",     # AEAD (AES-256-GCM) para cifrado de secretos en reposo (H5-T06, R8.2)
   "httpx>=0.27",          # cliente async para hablar con GitHub OAuth/API (H5-T11)
   "redis>=5",             # state OAuth single-use (GETDEL) + sesión de servidor (H5-T11, ADR-4)
+  "PyJWT>=2.8",           # firma JWT RS256 para GitHub App installation token (H5-T23, R2.5)
 ]
 
 [project.optional-dependencies]

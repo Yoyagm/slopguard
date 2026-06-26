@@ -1,6 +1,6 @@
-"""Scan Router: endpoints de escaneo y histórico (H5-T19/T20).
+"""Scan Router: endpoints de escaneo y histórico (H5-T19/T20/T24).
 
-POST /api/v1/scans           — escaneo on-demand (T19).
+POST /api/v1/scans           — escaneo on-demand (T19, T24).
 GET  /api/v1/scans           — lista paginada del histórico (T20, R5.2).
 GET  /api/v1/scans/{id}      — detalle del escaneo (T20, R5.3).
 GET  /api/v1/scans/{id}/raw  — report_json crudo schema 1.2 (T20, R4.3).
@@ -10,9 +10,8 @@ Mapeo de errores saneados (R9.2, design §4):
 - `ScanServiceError(TIMEOUT)`       → 504
 - `ScanServiceError(ENGINE_FAILURE)` → 502
 - Escaneo no encontrado o de otro usuario → 404 (no 403, R5.3)
+- source=repo: repo no encontrado/sin acceso/token fallido → 422 REPO_UNAVAILABLE
 Forma estable: `{ "error": { "code", "message", "request_id" } }` — sin stacktrace ni secretos.
-
-source=repo: camino preparado con error saneado documentado (lectura real en T24).
 """
 
 from __future__ import annotations
@@ -20,14 +19,33 @@ from __future__ import annotations
 import datetime
 import logging
 import uuid
-from typing import Annotated, Any, Literal
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from ..auth.guard import require_user
 from ..db.models import User
+from ..github_app.contents_client import (
+    GitHubContentsClient,
+    HttpxGitHubContentsClient,
+    RepoUnavailableError,
+    confine_path,
+)
+
+# `get_installation_repository` se importa (y re-exporta) desde el provider ÚNICO en
+# `github_app.deps`: un solo proveedor fail-closed compartido por scans/installations/webhooks.
+# Re-exportar el MISMO símbolo mantiene válidos los `dependency_overrides` de los tests que
+# apuntan a `app.api.scans.get_installation_repository`.
+from ..github_app.deps import (
+    AppConfigError,
+    get_github_app_token_client,
+    get_installation_repository,
+)
+from ..github_app.installation_repo import InstallationRepository
+from ..github_app.token_client import GitHubAppTokenClient, InstallationTokenError
 from ..scans.scan_repo import FakeScanRepository, ScanRepository, SqlScanRepository
 from ..schemas.scan import ScanDTO, ScanPageDTO
 from ..schemas.scan_request import ScanRequest
@@ -114,8 +132,72 @@ def get_scan_repository() -> ScanRepository:
     return SqlScanRepository(get_sessionmaker())
 
 
+def get_contents_client() -> GitHubContentsClient:
+    """Provider del cliente de la GitHub Contents API (T24, inyectable en tests)."""
+    return HttpxGitHubContentsClient()
+
+
+class _UnconfiguredTokenClient:
+    """Centinela: GitHub App no configurada. Lanza AppConfigError al intentar usarlo.
+
+    Permite que `get_scan_token_client` nunca levante en boot; solo falla al llamarlo
+    (cuando source=repo en tiempo de request). Los escaneos inline no lo invocan.
+    """
+
+    async def get_installation_token(self, installation_id: int) -> str:
+        raise AppConfigError(
+            "La GitHub App no está configurada: "
+            "los escaneos desde repo no están disponibles (fail-closed)."
+        )
+
+
+def get_scan_token_client() -> GitHubAppTokenClient:
+    """Provider del token client para el scan router. Degradación graceful si no configurado.
+
+    En vez de levantar `AppConfigError` en boot (lo que rompería escaneos inline), devuelve
+    un centinela que falla solo cuando se intenta obtener un token (source=repo). Esto permite
+    que los escaneos inline sigan funcionando sin la GitHub App configurada (T24, R2.5).
+    """
+    try:
+        return get_github_app_token_client()
+    except AppConfigError:
+        return _UnconfiguredTokenClient()
+
+
+# Fábrica perezosa del installation repo: difiere la construcción del provider ÚNICO fail-closed
+# (`github_app.deps.get_installation_repository`) hasta que el camino `source=repo` lo necesita
+# de verdad. Así un escaneo `source=inline` NO toca el repositorio de instalaciones (ni exige DB):
+# coherente con `_UnconfiguredTokenClient` para el token. El callable subyacente sigue siendo el
+# mismo provider unificado.
+InstallationRepoProvider = Callable[[], InstallationRepository]
+
+
+def get_installation_repo_provider(request: Request) -> InstallationRepoProvider:
+    """Devuelve una fábrica del installation repo SIN construirlo aún (lazy, source=repo).
+
+    Resuelve el provider efectivo respetando `app.dependency_overrides`: si un test sustituyó
+    `get_installation_repository`, la fábrica usa ese override; en otro caso usa el provider ÚNICO
+    fail-closed de producción. Esto evita que un escaneo `source=inline` dispare el fail-closed por
+    falta de DB (no necesita el repo) y mantiene un único provider de instalaciones en el sistema.
+    """
+    overrides = request.app.dependency_overrides
+    provider = overrides.get(get_installation_repository, get_installation_repository)
+
+    def _factory() -> InstallationRepository:
+        # `dependency_overrides` está tipado como Callable[..., Any]; el provider efectivo
+        # siempre construye un InstallationRepository (prod fail-closed o el doble de tests).
+        return cast(InstallationRepository, provider())
+
+    return _factory
+
+
 ScanServiceDep = Annotated[ScanService, Depends(get_scan_service)]
 ScanRepoDep = Annotated[ScanRepository, Depends(get_scan_repository)]
+InstallationRepoProviderDep = Annotated[
+    InstallationRepoProvider, Depends(get_installation_repo_provider)
+]
+ContentsClientDep = Annotated[GitHubContentsClient, Depends(get_contents_client)]
+TokenClientDep = Annotated[GitHubAppTokenClient, Depends(get_scan_token_client)]
 
 
 # ---------------------------------------------------------------------------
@@ -133,13 +215,16 @@ async def create_scan(
     current_user: CurrentUser,
     scan_service: ScanServiceDep,
     scan_repo: ScanRepoDep,
+    installation_repo_provider: InstallationRepoProviderDep,
+    contents_client: ContentsClientDep,
+    token_client: TokenClientDep,
 ) -> Any:
-    """Lanza un escaneo on-demand y persiste el resultado (R3.1, R5.1, design §2.2).
+    """Lanza un escaneo on-demand y persiste el resultado (R3.1, R5.1, T24, design §2.2).
 
     Flujo:
     1. Valida la forma del request (source + campos requeridos).
     2. Para source=inline: invoca `scan_service.scan_text`.
-       Para source=repo: error saneado documentado (lectura real en T24).
+       Para source=repo: resuelve repo → installation token → lee manifiesto → scan_text.
     3. Mapea `ScanReport` → `ScanDTO` con metadatos de persistencia.
     4. Persiste en `scans` + `scan_results` vía `ScanRepository`.
     5. Devuelve `ScanDTO` sin `report_raw` (R4.3: el raw va en `/scans/{id}/raw`).
@@ -147,10 +232,12 @@ async def create_scan(
     Errores saneados R9.2:
     - source inválido / campo requerido ausente → 422
     - motor: INVALID_INPUT → 422, TIMEOUT → 504, ENGINE_FAILURE → 502
+    - repo no disponible (no existe, sin acceso, token fallido, archivo ausente)
+      → 422 REPO_UNAVAILABLE
     """
     request_id = str(uuid.uuid4())
 
-    # Validación de source y campos requeridos
+    # Validación de source y campos requeridos.
     validation_error = _validate_request(body)
     if validation_error:
         return _error_response(
@@ -160,21 +247,30 @@ async def create_scan(
             request_id=request_id,
         )
 
-    # source=repo: camino preparado; lectura real en T24.
+    # Determinar el contenido a escanear según la fuente.
     if body.source == "repo":
-        return _error_response(
-            422,
-            code="REPO_SOURCE_NOT_IMPLEMENTED",
-            message=(
-                "El escaneo desde repo conectado no está disponible en esta versión. "
-                "Use source=inline con el contenido del manifiesto."
-            ),
+        # Solo aquí construimos el installation repo (provider ÚNICO fail-closed): un escaneo
+        # inline nunca lo necesita y por tanto no exige DB. Si la App no está configurada, el
+        # provider lanza AppConfigError → el handler global responde 503 (fail-closed).
+        installation_repo = installation_repo_provider()
+        repo_result = await _resolve_repo_content(
+            body=body,
+            current_user=current_user,
+            installation_repo=installation_repo,
+            contents_client=contents_client,
+            token_client=token_client,
             request_id=request_id,
         )
+        if isinstance(repo_result, JSONResponse):
+            # Propagamos el error saneado sin exponerlo más.
+            return repo_result
+        content, repo_internal_id = repo_result
+    else:
+        # source=inline: `content` garantizado no-None por _validate_request.
+        content = body.content or ""
+        repo_internal_id = None
 
-    # source=inline: invocar el motor
-    # `content` garantizado no-None por _validate_request (rechaza inline sin content).
-    content = body.content or ""
+    # Invocar el motor con el contenido (inline o leído del repo).
     try:
         report = await scan_service.scan_text(content, ecosystem=body.ecosystem)
     except ScanServiceError as exc:
@@ -194,7 +290,7 @@ async def create_scan(
     persisted_id = await scan_repo.persist(
         dto,
         user_id=current_user.id,
-        repo_id=None,
+        repo_id=repo_internal_id,
         origin="on_demand",
     )
 
@@ -304,6 +400,123 @@ async def get_scan_raw(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _resolve_repo_content(
+    *,
+    body: ScanRequest,
+    current_user: User,
+    installation_repo: InstallationRepository,
+    contents_client: GitHubContentsClient,
+    token_client: GitHubAppTokenClient,
+    request_id: str,
+) -> tuple[str, uuid.UUID] | JSONResponse:
+    """Resuelve el manifiesto de un repo conectado para el scan (T24, R2.5).
+
+    Pasos:
+    1. Parsear `repo_id` como UUID (garantizado no-None por `_validate_request`).
+    2. Buscar el repo + installation_id de GitHub en la DB, verificando que el repo
+       pertenece al usuario y la instalación está activa (aislamiento R5.3 + R2.4).
+    3. Obtener un installation token fresco (puede venir de caché Redis AEAD).
+    4. Leer el manifiesto via GitHub Contents API (path confinado anti-traversal).
+    5. Devolver `(content_str, repo_internal_uuid)` para que el caller persista el scan
+       con el `repo_id` correcto.
+
+    En cualquier fallo (repo desconocido, instalación revocada, token fallido, archivo
+    ausente, error de red) → devuelve una `JSONResponse` 422 REPO_UNAVAILABLE saneada
+    (sin token ni detalles internos, R9.2/NFR-Seg-3).
+    """
+    # Parsear UUID del repo (la validación previa solo confirma que no es None/vacío).
+    raw_repo_id = body.repo_id or ""
+    try:
+        repo_uuid = uuid.UUID(raw_repo_id)
+    except ValueError:
+        return _error_response(
+            422,
+            code="REPO_UNAVAILABLE",
+            message="El 'repo_id' no tiene un formato UUID válido.",
+            request_id=request_id,
+        )
+
+    # Buscar repo + installation_id en la DB: falla si no existe o instalación inactiva.
+    repo_with_inst = await installation_repo.get_repo_with_installation_id(
+        repo_uuid, current_user.id
+    )
+    if repo_with_inst is None:
+        return _error_response(
+            422,
+            code="REPO_UNAVAILABLE",
+            message=(
+                "El repo no está disponible. Puede que la instalación de la GitHub App "
+                "haya sido revocada o el repo no sea accesible con tu cuenta."
+            ),
+            request_id=request_id,
+        )
+
+    # Obtener installation token (renovar si expirado; cacheable en Redis AEAD).
+    try:
+        token = await token_client.get_installation_token(
+            repo_with_inst.github_installation_id
+        )
+    except (InstallationTokenError, AppConfigError) as exc:
+        # Logueamos solo el tipo de error, sin el token ni la clave privada.
+        logger.warning(
+            "No se pudo obtener el installation token para installation_id=%d "
+            "(request_id=%s): %s",
+            repo_with_inst.github_installation_id,
+            request_id,
+            type(exc).__name__,
+        )
+        return _error_response(
+            422,
+            code="REPO_UNAVAILABLE",
+            message=(
+                "No se pudo obtener acceso al repo. "
+                "El token de instalación no está disponible; intenta de nuevo en unos segundos."
+            ),
+            request_id=request_id,
+        )
+
+    # Confinamiento de ruta antes de llegar a la red (anti path traversal).
+    # La validación ocurre aquí (en el borde del servicio) además de en el cliente HTTP,
+    # de modo que el fake en tests también la dispara sin llamar a GitHub.
+    raw_path = body.path or ""
+    try:
+        safe_path = confine_path(raw_path)
+    except RepoUnavailableError as path_exc:
+        return _error_response(
+            422,
+            code="REPO_UNAVAILABLE",
+            message=str(path_exc),
+            request_id=request_id,
+        )
+
+    # Leer el manifiesto vía GitHub Contents API.
+    ref = body.ref  # None = rama por defecto del repo
+    try:
+        content = await contents_client.fetch_manifest(
+            token=token,
+            full_name=repo_with_inst.full_name,
+            path=safe_path,
+            ref=ref,
+        )
+    except RepoUnavailableError as exc:
+        # El mensaje ya está saneado (no incluye el token). Lo propagamos como 422.
+        logger.warning(
+            "Manifiesto no disponible en repo '%s' path='%s' (request_id=%s): %s",
+            repo_with_inst.full_name,
+            safe_path,
+            request_id,
+            exc,
+        )
+        return _error_response(
+            422,
+            code="REPO_UNAVAILABLE",
+            message=str(exc),
+            request_id=request_id,
+        )
+
+    return content, repo_with_inst.repo.id
 
 
 def _validate_request(body: ScanRequest) -> str | None:

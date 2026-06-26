@@ -11,5 +11,7 @@ packages:
 # local y CI sin requerir `pnpm approve-builds` interactivo.
 verifyDepsBeforeRun: false
 allowBuilds:
+  # esbuild (dev, vía vitest) SÍ necesita su build para instalar su binario de plataforma.
+  esbuild: true
   sharp: false
   unrs-resolver: false

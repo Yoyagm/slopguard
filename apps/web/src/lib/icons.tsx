@@ -200,3 +200,130 @@ export function XIcon({ className, ...props }: IconProps) {
     </svg>
   );
 }
+
+/** Chevron hacia la derecha — expandibles, acordeón. */
+export function ChevronRightIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+/** Subir archivo. */
+export function UploadIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <polyline points="16 16 12 12 8 16" />
+      <line x1="12" y1="12" x2="12" y2="21" />
+      <path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3" />
+    </svg>
+  );
+}
+
+/** Archivo de texto / manifiesto inline. */
+export function FileTextIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <polyline points="10 9 9 9 8 9" />
+    </svg>
+  );
+}
+
+/** Rama git — fuente de tipo repo. */
+export function GitBranchIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <line x1="6" y1="3" x2="6" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 01-9 9" />
+    </svg>
+  );
+}
+
+/** Flecha hacia la izquierda — volver. */
+export function ArrowLeftIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </svg>
+  );
+}
+
+/** Check simple — éxito, copiado. */
+export function CheckIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+/** Capas / layers — agrupación de señales por capa. */
+export function LayersIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
+    </svg>
+  );
+}
+
+/** Paquete — dependencia individual. */
+export function PackageIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <line x1="16.5" y1="9.4" x2="7.5" y2="4.21" />
+      <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 002 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+      <line x1="12" y1="22.08" x2="12" y2="12" />
+    </svg>
+  );
+}
+
+/** Código / JSON viewer. */
+export function CodeIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  );
+}
+
+/** Filtro. */
+export function FilterIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+  );
+}
+
+/** Alerta circular — error de nivel escaneo. */
+export function AlertCircleIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+/** Siguiente página / flecha derecha. */
+export function ArrowRightIcon({ className, ...props }: IconProps) {
+  return (
+    <svg {...defaultProps} className={className} {...props}>
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </svg>
+  );
+}

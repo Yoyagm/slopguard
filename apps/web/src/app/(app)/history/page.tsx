@@ -1,40 +1,36 @@
 /**
- * Página de historial — placeholder Ola 6a.
- * La funcionalidad completa llega en Ola 6b.
+ * Historial de escaneos (T35).
+ *
+ * Server Component que envuelve HistoryClient en <Suspense>.
+ * Necesario porque HistoryClient usa useSearchParams() — Next.js exige que el
+ * componente que llama useSearchParams esté dentro de un Suspense boundary.
  */
 
-import Link from "next/link";
-import { HistoryIcon } from "@/lib/icons";
-import { Card } from "@/components/ui/Card";
+import { Suspense } from "react";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { HistoryClient } from "./HistoryClient";
+
+function HistoryFallback() {
+  return (
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-56" aria-label="Cargando título…" />
+        <Skeleton className="h-4 w-32" />
+      </div>
+      <Skeleton className="h-16 w-full rounded-sg" aria-label="Cargando filtros…" />
+      <div className="space-y-3">
+        {[1, 2, 3, 4, 5].map((i) => (
+          <Skeleton key={i} className="h-12 w-full rounded-sg" />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function HistoryPage() {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] py-16 px-4">
-      <Card className="w-full max-w-md p-10 flex flex-col items-center gap-6 text-center">
-        {/* Icono de empty state */}
-        <div className="w-14 h-14 rounded-full bg-sg-accent/10 text-sg-accent flex items-center justify-center">
-          <HistoryIcon className="w-7 h-7" />
-        </div>
-
-        {/* Texto */}
-        <div className="space-y-2">
-          <h1 className="text-xl font-semibold text-sg-text">En construcción</h1>
-          <p className="text-sm text-sg-muted leading-relaxed">
-            El historial paginado de escaneos estará disponible en la{" "}
-            <strong className="text-sg-text font-medium">Ola 6b</strong>.
-            Podrás filtrar por ecosistema, ver el resumen de veredictos y
-            descargar el reporte JSON completo de cada escaneo.
-          </p>
-        </div>
-
-        {/* CTA alternativa */}
-        <Link
-          href="/dashboard"
-          className="text-sm text-sg-accent hover:text-sg-accent-strong underline underline-offset-2 transition-colors duration-150 cursor-pointer"
-        >
-          Volver al dashboard
-        </Link>
-      </Card>
-    </div>
+    <Suspense fallback={<HistoryFallback />}>
+      <HistoryClient />
+    </Suspense>
   );
 }

@@ -1,0 +1,74 @@
+# docker-compose.prod.yml — overlay de PRODUCCIÓN (VPS + dominio + TLS).
+#
+# Uso (sobre el base):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# Añade Caddy (reverse proxy + TLS automático), pone el API/worker en modo producción y
+# DEJA DE PUBLICAR api/web al host: solo Caddy expone 80/443 (evita saltarse el TLS).
+#
+# Requiere Docker Compose v2.24+ (por el tag `!reset`, que limpia los puertos del base).
+#
+# Variables de interpolación (del `.env` de la RAÍZ del repo, que compose carga solo):
+#   DOMAIN   dominio público, p.ej. slopguard.tudominio.com
+
+services:
+
+  # ── Caddy (reverse proxy + TLS Let's Encrypt) ───────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"     # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?Define DOMAIN en el .env de la raiz del repo}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # certificados (persistentes: no re-emitir en cada deploy)
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
+  # ── Postgres / Redis: dejan de publicarse al host (solo red interna de Docker) ──
+  # En el base bindean a 127.0.0.1 para herramientas locales; en producción nada del host los
+  # necesita (api/worker los alcanzan por nombre de servicio). Cerrarlos reduce superficie.
+  postgres:
+    ports: !reset []
+  redis:
+    ports: !reset []
+
+  # ── API: modo producción, sin publicar al host (solo vía Caddy) ─────────────
+  api:
+    ports: !reset []
+    environment:
+      ENVIRONMENT: production
+      # Un solo origen público para CORS y para los redirects de OAuth (callback same-origin).
+      CORS_ORIGINS: '["https://${DOMAIN}"]'
+      WEB_BASE_URL: "https://${DOMAIN}"
+      # Detrás de Caddy, la IP del socket es la del proxy: confiamos en X-Forwarded-For (que Caddy
+      # reescribe con la IP real del peer en el Caddyfile) para que el rate-limit sea POR IP real.
+      RATE_LIMIT_TRUST_FORWARDED_FOR: "true"
+
+  # ── Worker: modo producción (mismas validaciones fail-closed de secretos) ────
+  worker:
+    environment:
+      ENVIRONMENT: production
+
+  # ── Web: sin publicar al host; la URL pública del API se hornea en el build ──
+  web:
+    ports: !reset []
+    build:
+      args:
+        # NEXT_PUBLIC_* es build-time: el bundle del cliente llama a https://{DOMAIN}/api/v1/...
+        # (Caddy enruta /api/* al API). DEBE coincidir con el origen real.
+        NEXT_PUBLIC_API_BASE_URL: "https://${DOMAIN}"
+
+volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local

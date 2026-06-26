@@ -152,7 +152,7 @@ def test_login_emite_state_y_redirige_a_github(fakes: dict[str, object]) -> None
     assert state_store.issue_calls == 1
 
 
-def test_login_sin_client_id_responde_503(
+def test_login_sin_client_id_redirige_a_login_con_error(
     fakes: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app import settings as settings_module
@@ -161,7 +161,12 @@ def test_login_sin_client_id_responde_503(
     monkeypatch.setattr(auth_module, "get_settings", lambda: sin_id)
     client = _client(fakes)
     resp = client.get("/api/v1/auth/login")
-    assert resp.status_code == 503
+    # Sin OAuth configurado: en lugar de un JSON 503 crudo, redirige a la pantalla de login del
+    # front con un código de error que esta traduce a un mensaje legible (UX profesional).
+    assert resp.status_code == 302
+    assert (
+        resp.headers["location"] == "http://localhost:3000/login?error=oauth_unavailable"
+    )
 
 
 # --- /auth/callback feliz -----------------------------------------------------------------
@@ -176,7 +181,7 @@ def test_callback_valido_abre_sesion_y_redirige_al_dashboard(fakes: dict[str, ob
     resp = client.get("/api/v1/auth/callback", params={"state": "good-state", "code": _FAKE_CODE})
 
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/dashboard"
+    assert resp.headers["location"] == "http://localhost:3000/dashboard"
 
     # Cookie de sesión httpOnly + SameSite=Lax presente.
     set_cookie = resp.headers["set-cookie"]

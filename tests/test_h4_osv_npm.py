@@ -82,3 +82,43 @@ def test_validador_pypi_rechaza_blob_npm() -> None:
 def test_ecosystem_id_fuera_de_tabla_es_value_error() -> None:
     with pytest.raises(ValueError):
         OsvSource(_config(), ecosystem_id="cargo", use_cache=False)
+
+
+# --------------------------------------------------------------------------- #
+# Camino de red END-TO-END npm (query_batch real salvo el POST). Cierra el hueco
+# de la auditoria: que la constante de ecosistema npm llegue al POST real (no solo
+# a _build_body aislado) y que el lote npm degrade fail-closed igual que pypi.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeHttp:
+    """Transporte falso: captura el body del POST y devuelve un payload fijo."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+        self.last_body: dict[str, object] | None = None
+
+    def post_json(self, _url: str, body: dict[str, object], **_kw: object) -> dict[str, object]:
+        self.last_body = body
+        return self._payload
+
+
+def test_query_batch_npm_mal_es_malicious_y_el_body_lleva_npm() -> None:
+    source = _npm_source()
+    fake = _FakeHttp({"results": [{"vulns": [{"id": "MAL-2025-47868"}]}]})
+    source._http = fake  # type: ignore[assignment]  # camino de red real salvo el POST
+    resolved = source.query_batch(["bioql"])
+    assert resolved["bioql"].state is MaliceState.MALICIOUS
+    assert [a.id for a in resolved["bioql"].advisories] == ["MAL-2025-47868"]
+    # La constante npm viaja en el POST real (integrado), no solo en _build_body aislado.
+    assert fake.last_body is not None
+    assert '"ecosystem": "npm"' in json.dumps(fake.last_body)
+
+
+def test_query_batch_npm_respuesta_desalineada_es_unverifiable_no_clean() -> None:
+    # NFR-Degr.1: un lote npm con results mas corto que queries degrada a UNVERIFIABLE,
+    # jamas CLEAN (mismo fail-closed que pypi, verificado por la ruta npm).
+    source = _npm_source()
+    source._http = _FakeHttp({"results": []})  # type: ignore[assignment]  # 0 resultados, 1 query
+    resolved = source.query_batch(["bioql"])
+    assert resolved["bioql"].state is MaliceState.UNVERIFIABLE

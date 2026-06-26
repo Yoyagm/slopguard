@@ -8,6 +8,7 @@ orquestador (engine.py) y, en tests, el harness.
 from __future__ import annotations
 
 from ..config import Config
+from .base import EcosystemAdapter
 from .npm import NpmAdapter
 from .pypi import PypiAdapter
 
@@ -23,8 +24,12 @@ def get_adapter(
     *,
     config: Config | None = None,
     use_cache: bool = True,
-) -> PypiAdapter | NpmAdapter:
+) -> EcosystemAdapter:
     """Retorna el adapter concreto para el ecosistema dado (R1.1, R1.4).
+
+    El tipo de retorno es el Protocol `EcosystemAdapter`, no la union concreta: los
+    callers solo dependen del contrato, y cada ecosistema nuevo se enchufa sin tocar
+    la firma (mypy verifica la conformidad estructural de cada adapter concreto).
 
     - "pypi" -> PypiAdapter
     - "npm"  -> NpmAdapter  (H4-T13, C5)

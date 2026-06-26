@@ -7,7 +7,7 @@ Reglas de mapeo:
 - Mapeo 1:1: ningún campo del `ScanReport` se pierde ni se inventa.
 - Enums del motor (StrEnum/IntEnum) → sus `.value` primitivos (str/int),
   para que la capa de serialización Pydantic no dependa de los tipos del motor.
-- `render_json` produce el JSON canónico (schema 1.2) que se porta como `report_raw`
+- `render_json` produce el JSON canónico (schema 1.2) que se parsea a `report_dict`
   (R4.3); se reutiliza la fachada pública de la CLI sin reimplementar la serialización.
 - Los metadatos de persistencia (`scan_id`, `origin`, `created_at`) los aporta el
   llamador (el router o el worker), no el motor.
@@ -16,7 +16,9 @@ Reglas de mapeo:
 from __future__ import annotations
 
 import datetime
+import json
 import uuid
+from typing import Any
 
 from slopguard.cli.render_json import render_json
 from slopguard.core import Advisory, DependencyResult, LayerSignal, ScanReport
@@ -95,10 +97,11 @@ def scan_report_to_dto(
     """Convierte un `ScanReport` inmutable del motor en el `ScanDTO` HTTP del SaaS.
 
     `scan_id`, `origin` y `created_at` son metadatos de persistencia que aporta el
-    llamador: el motor no los conoce. `render_json` produce el JSON canónico que viaja
-    en `report_raw` para el endpoint `/scans/{id}/raw` (R4.3).
+    llamador: el motor no los conoce. `render_json` produce el JSON canónico que se
+    parsea UNA vez a `report_dict` para el endpoint `/scans/{id}/raw` (R4.3).
     """
     summary = report.summary
+    report_dict: dict[str, Any] = json.loads(render_json(report))
     return ScanDTO(
         scan_id=scan_id,
         origin=origin,
@@ -119,5 +122,5 @@ def scan_report_to_dto(
             exit_code=summary.exit_code,
         ),
         results=[_map_dependency_result(r) for r in report.results],
-        report_raw=render_json(report),
+        report_dict=report_dict,
     )

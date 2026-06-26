@@ -16,7 +16,9 @@ Reglas de modelado:
 from __future__ import annotations
 
 import datetime
+import json
 import uuid
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -95,7 +97,7 @@ class ScanDTO(BaseModel):
 
     Fusiona el `ScanReport` 1:1 (schema_version 1.2, ecosystem, summary, results,
     error_category) con los metadatos de persistencia del SaaS (scan_id, origin,
-    created_at). `report_raw` porta el JSON canónico del motor (R4.3).
+    created_at). `report_dict` porta el JSON canónico del motor (R4.3) como dict.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -112,8 +114,44 @@ class ScanDTO(BaseModel):
     summary: ScanSummaryDTO
     results: list[DependencyResultDTO]
 
-    # JSON crudo del motor serializado (R4.3): lo que devuelve render_json().
-    # No incluido en el endpoint /scans/{id} pero sí en /scans/{id}/raw y como
-    # fuente de verdad de detalle. Se omite de la respuesta principal con `exclude`
-    # cuando el router quiera ahorrar payload; aquí vive en el DTO interno.
-    report_raw: str
+    # Reporte canónico del motor (schema 1.2) como dict — exactamente lo que produce
+    # render_json() ya parseado (R4.3). Es la fuente de verdad para /scans/{id}/raw:
+    # se devuelve directamente sin re-parsear (sin dumps→loads en el router). El
+    # SqlScanRepository lo toma del JSONB sin serializar de vuelta. Se omite de la
+    # respuesta principal de /scans y /scans/{id} (el raw va solo en /scans/{id}/raw).
+    report_dict: dict[str, Any]
+
+    @property
+    def report_raw(self) -> str:
+        """JSON canónico serializado (compat): derivado de `report_dict`."""
+        return json.dumps(self.report_dict)
+
+
+class ScanListItemDTO(BaseModel):
+    """Resumen de un escaneo para la lista paginada del histórico (GET /scans, R5.2).
+
+    No incluye `results` detallados ni `report_raw` — solo los campos suficientes
+    para renderizar la fila del histórico y navegar al detalle.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scan_id: uuid.UUID
+    origin: str  # "on_demand" | "pull_request"
+    created_at: datetime.datetime
+    ecosystem: str
+    schema_version: str
+    tool_version: str
+    error_category: str | None
+    summary: ScanSummaryDTO
+
+
+class ScanPageDTO(BaseModel):
+    """Respuesta paginada del histórico (GET /scans, R5.2)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    items: list[ScanListItemDTO]
+    total: int
+    page: int
+    page_size: int

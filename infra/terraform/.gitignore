@@ -1,0 +1,24 @@
+# .gitignore de Terraform — evita FUGAS de secretos y estado (H5-T08).
+# El estado de Terraform almacena valores sensibles EN CLARO; nunca se versiona.
+
+# Estado local y backups (contienen connection strings, contraseñas, tokens).
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Directorio de trabajo del provider (binarios, lock de proveedores resueltos).
+.terraform/
+# El lock de versiones SÍ se versiona aparte (.terraform.lock.hcl) si se genera.
+
+# Variables reales: solo se versiona el *.example.
+terraform.tfvars
+*.auto.tfvars
+secrets.auto.tfvars
+
+# Planes guardados (pueden incluir valores sensibles del diff).
+*.tfplan
+plan.out
+
+# Logs de crash de Terraform.
+crash.log
+crash.*.log

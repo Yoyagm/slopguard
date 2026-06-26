@@ -22,6 +22,7 @@ dependencies = [
   "alembic>=1.13",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
+  "cryptography>=43",     # AEAD (AES-256-GCM) para cifrado de secretos en reposo (H5-T06, R8.2)
 ]
 
 [project.optional-dependencies]
@@ -46,7 +47,7 @@ select = ["E", "F", "I", "B", "S", "UP", "ANN", "RUF"]
 ignore = ["ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]        # assert permitido en tests
+"tests/*" = ["S101", "S105", "S106"]  # assert + secretos SINTÉTICOS de prueba en tests
 "alembic/*" = ["ANN", "F401"]
 
 [tool.mypy]

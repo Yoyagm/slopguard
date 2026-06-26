@@ -74,7 +74,9 @@ class GithubInstallation(TimestampMixin, Base):
     installation_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     account_login: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="active", server_default=text("'active'")
+    )
 
     user: Mapped[User] = relationship(back_populates="installations")
     repos: Mapped[list[Repo]] = relationship(
@@ -164,6 +166,8 @@ class ScanResult(Base):
     verdict: Mapped[str | None] = mapped_column(Text, nullable=True)  # allow|warn|block|None
     score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     suspected_target: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_malicious: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_malicious: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     scan: Mapped[Scan] = relationship(back_populates="results")

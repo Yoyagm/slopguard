@@ -100,6 +100,9 @@ fail_under = 90
 # desacople core/CLI. Hacen fallar el build si una capa cruza la frontera.
 [tool.importlinter]
 root_package = "slopguard"
+# H5-T02: requerido por el contrato (6) forbidden hacia `app` (paquete externo al
+# root). Permite a grimp registrar imports salientes a paquetes fuera de slopguard.
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "El core no depende de la CLI (R10.3)"
@@ -167,3 +170,17 @@ forbidden_modules = [
   "slopguard.core.scoring",
   "slopguard.core.threatintel",
 ]
+
+# H5-T02: frontera de imports del monorepo (NFR-Arq.2 / ADR-5) ----------------
+
+# (6) El motor (core, zero-deps) NUNCA importa el SaaS (apps/api == paquete `app`).
+#     La frontera es unidireccional: web → api → motor. El API consume el motor por
+#     su fachada publica (slopguard.core / slopguard.cli.render_json); el inverso queda
+#     prohibido. Tipo `forbidden`: grimp registra el import a `app` como dependencia
+#     externa al leer el AST de slopguard, por lo que el contrato detecta la violacion
+#     aunque `app` no este instalado en el venv que corre lint-imports.
+[[tool.importlinter.contracts]]
+name = "El motor no depende del SaaS apps/api (NFR-Arq.2 / ADR-5)"
+type = "forbidden"
+source_modules = ["slopguard"]
+forbidden_modules = ["app"]

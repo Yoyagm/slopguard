@@ -25,12 +25,16 @@ def create_app() -> FastAPI:
         description="Backend que envuelve el motor SlopGuard (zero-deps) como librería in-process.",
     )
 
+    # CORS endurecido (NFR-Seg): orígenes explícitos + credenciales. `allow_headers` se
+    # restringe a lo que el front necesita; `allow_headers=["*"]` con `allow_credentials=True`
+    # amplía la superficie innecesariamente. La validación de que los orígenes sean https y
+    # sin comodín en producción vive en `Settings` (fail-closed en boot).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
     app.include_router(health_router, prefix=settings.api_v1_prefix)

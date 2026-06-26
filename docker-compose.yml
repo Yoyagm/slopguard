@@ -1,0 +1,111 @@
+# docker-compose.yml — Stack local de desarrollo de SlopGuard SaaS (H5-T07).
+#
+# Servicios:
+#   postgres  → Postgres 16 con volumen persistente.
+#   redis     → Redis 7 (cola Arq + state OAuth + rate-limit).
+#   api       → FastAPI + uvicorn (imagen compartida con worker).
+#   worker    → Arq worker (placeholder hasta Ola 5; mismo Dockerfile que api).
+#
+# Uso:
+#   cp apps/api/.env.example apps/api/.env   # rellenar los valores
+#   docker compose up --build
+#
+# Las variables sensibles entran SOLO por env_file; nunca se hardcodean aquí.
+# (NFR-Seg: cero secretos en el YAML versionado.)
+
+services:
+
+  # ── Postgres ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: slopguard
+      POSTGRES_PASSWORD: slopguard        # solo dev local; producción usa Neon (ADR-1)
+      POSTGRES_DB: slopguard
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Expuesto solo en loopback para herramientas locales (psql, DBeaver).
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slopguard -d slopguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── API (FastAPI + uvicorn) ────────────────────────────────────────────────
+  api:
+    build:
+      # El contexto es la raíz del monorepo: el Dockerfile necesita src/slopguard
+      # y apps/api juntos en el mismo contexto para el install editable.
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    # Comando explícito para el entrypoint: "api" inicia uvicorn.
+    command: ["api"]
+    env_file:
+      # Carga las variables desde apps/api/.env (gitignored).
+      # Copiar apps/api/.env.example → apps/api/.env y rellenar antes de `up`.
+      - apps/api/.env
+    environment:
+      # Sobrescribe DATABASE_URL / REDIS_URL para apuntar a los servicios del compose.
+      # Estas URLs son internas a la red Docker (nombre de servicio como host).
+      DATABASE_URL: postgresql+psycopg://slopguard:slopguard@postgres:5432/slopguard
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Worker (Arq — placeholder hasta Ola 5) ────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    restart: "no"           # placeholder: sale limpiamente; en Ola 5 será unless-stopped
+    # Comando "worker" activa la rama del entrypoint que imprime el placeholder y sale.
+    # En Ola 5 este comando pasará a: arq app.worker.main.WorkerSettings
+    command: ["worker"]
+    env_file:
+      - apps/api/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://slopguard:slopguard@postgres:5432/slopguard
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

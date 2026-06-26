@@ -1,0 +1,110 @@
+# render.yaml — Blueprint nativo de Render para el runtime de SlopGuard SaaS.
+#
+# H5-T08 (ADR-1): el API y el Worker comparten la MISMA imagen Docker
+# (apps/api/Dockerfile, contexto raíz del monorepo) y se arrancan como DOS
+# procesos distintos según el comando del entrypoint:
+#   - web service  → dockerCommand "api"     → uvicorn (FastAPI)
+#   - worker       → dockerCommand "worker"  → Arq worker (placeholder hasta Ola 5)
+#
+# Postgres y Redis NO son recursos de Render: son gestionados (Neon / Upstash,
+# ADR-1) y se crean con Terraform (infra/terraform). Por eso DATABASE_URL y
+# REDIS_URL entran como secretos `sync: false` (se rellenan en el dashboard de
+# Render con los outputs de Terraform). Esto evita un segundo almacén duplicado.
+#
+# SEGURIDAD (NFR-Seg-3): este archivo NO contiene secretos. Cada variable
+# sensible se declara con `sync: false` (Render pide su valor manualmente y lo
+# guarda cifrado, fuera del repo) o se referencia desde un envVarGroup.
+
+services:
+  # ── API (web service) ──────────────────────────────────────────────────────
+  - type: web
+    name: slopguard-api
+    runtime: docker
+    repo: https://github.com/Yoyagm/slopguard
+    plan: starter # proceso de larga vida (caché en disco del motor persiste, ADR-1)
+    region: ohio # cercana a Neon/Upstash us-east-1 para minimizar latencia
+    # Contexto de build = raíz del monorepo (el Dockerfile necesita src/ + apps/api).
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    dockerCommand: api
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    # Disco persistente: aloja la caché en disco del motor entre escaneos (ADR-1,
+    # NFR-Rendimiento-1). Sin esto, cada reinicio arrancaría en frío.
+    # El motor escribe en `Path.home()/.cache/slopguard` (src/slopguard/.../disk_cache).
+    # El usuario `slopguard` del contenedor se crea con --no-create-home, así que
+    # HOME se fija explícitamente (envVarGroup) al punto de montaje del disco para
+    # que `Path.home()` resuelva a almacenamiento persistente y escribible.
+    disk:
+      name: engine-cache
+      mountPath: /var/cache/slopguard
+      sizeGB: 1
+    envVars:
+      # Comunes (no secretas) compartidas con el worker.
+      - fromGroup: slopguard-shared
+      # Secretos: Render los pide manualmente y los cifra (nunca en el repo).
+      - key: DATABASE_URL # output `database_url` de Terraform (Neon)
+        sync: false
+      - key: REDIS_URL # output `redis_url` de Terraform (Upstash)
+        sync: false
+      - key: SESSION_SECRET # nonce de firma de sesión (generar fuerte por entorno)
+        sync: false
+      - key: ENCRYPTION_KEY # clave AEAD base64 para cifrado en reposo (H5-T06)
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+
+  # ── Worker (background worker) ─────────────────────────────────────────────
+  - type: worker
+    name: slopguard-worker
+    runtime: docker
+    repo: https://github.com/Yoyagm/slopguard
+    plan: starter
+    region: ohio
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    dockerCommand: worker
+    autoDeploy: true
+    envVars:
+      - fromGroup: slopguard-shared
+      # El worker necesita los MISMOS secretos que el API (comparte servicios:
+      # DB, Redis, vault, GitHub Service — design ADR-5).
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+
+# ── Grupo de variables comunes NO sensibles ──────────────────────────────────
+# Centraliza la config no secreta para no duplicarla entre API y worker.
+envVarGroups:
+  - name: slopguard-shared
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      # HOME apunta al disco persistente: el motor escribe su caché en
+      # `$HOME/.cache/slopguard` (bajo el mountPath del disco). Ver `disk` arriba.
+      - key: HOME
+        value: /var/cache/slopguard
+      - key: UVICORN_WORKERS
+        value: "2"
+      # Orígenes CORS del front en Vercel (ajustar al dominio real del proyecto).
+      - key: CORS_ORIGINS
+        value: '["https://slopguard-saas-web.vercel.app"]'

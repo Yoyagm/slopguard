@@ -1,0 +1,33 @@
+# terraform.tfvars.example — Plantilla de variables NO sensibles (H5-T08).
+#
+# Copiar a `terraform.tfvars` (gitignored) SOLO para parámetros no secretos.
+# Los SECRETOS (neon_api_key, upstash_email, upstash_api_key, vercel_api_token)
+# NUNCA van aquí ni en terraform.tfvars: se inyectan por entorno, p.ej.:
+#
+#   export TF_VAR_neon_api_key="..."
+#   export TF_VAR_upstash_email="..."
+#   export TF_VAR_upstash_api_key="..."
+#   export TF_VAR_vercel_api_token="..."
+#
+# (o vía un gestor de secretos / CI con secret store; ver infra/README.md.)
+
+environment  = "production"
+project_name = "slopguard-saas"
+
+# Neon (Postgres)
+neon_region_id     = "aws-us-east-1"
+neon_pg_version    = 16
+neon_database_name = "slopguard"
+neon_role_name     = "slopguard_app"
+
+# Upstash (Redis)
+upstash_redis_region   = "us-east-1"
+upstash_redis_tls      = true
+upstash_redis_eviction = true
+
+# Vercel (front)
+vercel_team_id        = "" # vacío = cuenta personal/hobby
+vercel_git_repo       = "Yoyagm/slopguard"
+vercel_root_directory = "apps/web"
+# api_public_url se rellena tras el primer despliegue de Render (ver README).
+api_public_url = ""

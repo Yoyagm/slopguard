@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+/*
+ * Sistema de diseño SlopGuard — "terminal de seguridad" oscuro (design §8, Ola 6a/T31).
+ * Dark-only por elección de producto: fondo profundo, alta legibilidad, color semántico
+ * RESERVADO al riesgo (allow/warn/block/malicious/unverifiable). El color NUNCA es el único
+ * portador de significado: cada veredicto se acompaña de icono + etiqueta (WCAG 1.4.1).
+ *
+ * Los tokens se registran en @theme para que Tailwind genere utilidades: bg-sg-surface,
+ * text-sg-muted, border-sg-border, bg-sg-allow/15, etc. La paleta pasa contraste AA sobre
+ * --color-sg-bg.
+ */
+@theme {
+  /* Superficies neutras (terminal). */
+  --color-sg-bg: #0b0f14; /* fondo base, casi-negro neutro */
+  --color-sg-surface: #11161d; /* paneles/tarjetas, un paso sobre el fondo */
+  --color-sg-raised: #161c24; /* elementos elevados (popovers, filas hover) */
+  --color-sg-border: #232a33; /* bordes sutiles para delimitar sin ruido */
+  --color-sg-border-strong: #313b46;
+
+  /* Texto. */
+  --color-sg-text: #e6edf3; /* primario, AA/AAA sobre --color-sg-bg */
+  --color-sg-muted: #9ba7b4; /* secundario, ≥AA sobre fondo y superficie */
+  --color-sg-faint: #6b7682; /* terciario: timestamps, placeholders */
+
+  /* Acción / foco (azul de marca, de la investigación UX). */
+  --color-sg-accent: #3b82f6;
+  --color-sg-accent-strong: #2563eb;
+  --color-sg-accent-contrast: #f8fafc;
+
+  /* Paleta semántica de veredictos (sobria, no neón). */
+  --color-sg-allow: #3fb950; /* verde sobrio */
+  --color-sg-warn: #d29922; /* ámbar */
+  --color-sg-block: #f85149; /* rojo */
+  --color-sg-malicious: #ff6a69; /* rojo intenso — MAL-* confirmado, badge distinto */
+  --color-sg-unverifiable: #8b96a3; /* gris/azul neutro — JAMÁS verde (fail-closed visual) */
+
+  /* Tipografía: Geist Sans (UI) + Geist Mono (paquetes, scores, JSON). */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+
+  /* Radios y sombras. */
+  --radius-sg: 0.625rem;
+  --shadow-sg-panel: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.25);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  border-color: var(--color-sg-border);
+}
+
+body {
+  background: var(--color-sg-bg);
+  color: var(--color-sg-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Foco visible y consistente en todo interactivo (a11y CRITICAL, NFR-UX-2). */
+:focus-visible {
+  outline: 2px solid var(--color-sg-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respeta la preferencia de movimiento reducido (sin animaciones decorativas). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Selección y scrollbar acordes al tema oscuro. */
+::selection {
+  background: color-mix(in srgb, var(--color-sg-accent) 35%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-sg-border-strong);
+  border: 3px solid var(--color-sg-bg);
+  border-radius: 999px;
+}

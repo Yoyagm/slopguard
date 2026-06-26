@@ -3,3 +3,13 @@
 # workspace de pnpm. Aquí solo se declaran los paquetes Node (el frontend).
 packages:
   - "apps/web"
+
+# No ejecutamos build scripts nativos de dependencias (sharp, unrs-resolver): no hacen falta para
+# lint/typecheck/build (next build funciona sin el binario de sharp; unrs-resolver trae binarios
+# precompilados). Los declaramos ignorados para silenciar el aviso en install, y desactivamos la
+# verificación pre-script para que `pnpm lint|typecheck|build` corran de forma determinista en
+# local y CI sin requerir `pnpm approve-builds` interactivo.
+verifyDepsBeforeRun: false
+allowBuilds:
+  sharp: false
+  unrs-resolver: false

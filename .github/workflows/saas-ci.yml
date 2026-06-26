@@ -66,17 +66,38 @@ jobs:
         run: python -m pytest -q
 
   web:
-    name: Web · Placeholder
+    name: Web · Lint · Tipos · Build
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # NOTA: apps/web es aún un placeholder (sin scaffold Next.js ni pnpm-lock.yaml).
-      # Habilitar `cache: pnpm` o `pnpm install --frozen-lockfile` aquí rompe el job
-      # porque no hay lockfile que cachear/resolver. En la Ola 6 (H5-T31/T32), cuando
-      # exista el scaffold real + lockfile, este job pasa a: pnpm/action-setup ->
-      # setup-node (cache: pnpm) -> pnpm install --frozen-lockfile -> typecheck + build.
-      - name: Placeholder (scaffold Next.js llega en Ola 6, H5-T31)
+      # pnpm 11 para casar el lockfile generado localmente (lockfileVersion 9.0).
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Configurar Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          # Lockfile único del workspace (apps/web es miembro del workspace de la raíz).
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Instalar dependencias del workspace (frozen lockfile)
+        # Install en la raíz del workspace; apps/web se resuelve como miembro.
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint
         working-directory: apps/web
-        run: echo "apps-web placeholder verde; scaffold Next.js y build real llegan en la Ola 6 (H5-T31/T32)"
+        run: pnpm lint
+
+      - name: Typecheck (tsc --noEmit)
+        working-directory: apps/web
+        run: pnpm typecheck
+
+      - name: Build (next build)
+        working-directory: apps/web
+        run: pnpm build

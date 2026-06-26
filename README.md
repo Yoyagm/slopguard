@@ -673,6 +673,25 @@ y 3.12, mas la compilacion del documento tecnico LaTeX a PDF.
 
 ---
 
+## SaaS (Hito 5): dashboard + GitHub App
+
+Además de la CLI, SlopGuard se ofrece como SaaS auto-hospedable que envuelve este mismo motor
+zero-deps **in-process**: un dashboard web (login con GitHub, escaneo on-demand de manifiestos,
+histórico de reportes) y una GitHub App que escanea los PRs y publica un Check Run **no
+bloqueante**. El motor (`src/slopguard`) sigue sin depender del SaaS (frontera verificada por
+import-linter).
+
+- **Backend** (`apps/api`): FastAPI + SQLAlchemy/Postgres + Redis + worker Arq. Ver `apps/api/README.md`.
+- **Frontend** (`apps/web`): Next.js (App Router, dark "terminal de seguridad"). Ver `apps/web/README.md`.
+- **Self-host** con un comando (`docker compose up --build`): runbook en **`docs/self-host.md`**.
+- **E2E** del flujo crítico (Playwright): `apps/web/e2e/README.md`.
+
+```bash
+docker compose up --build -d        # postgres, redis, migrate (one-shot), api, worker, web
+curl -s http://localhost:8000/api/v1/health    # {"status":"ok","db":"ok","redis":"ok"}
+open http://localhost:3000          # dashboard
+```
+
 ## Documentación técnica
 
 El documento técnico completo (arquitectura por capas, ADRs, modelos de datos, diagramas

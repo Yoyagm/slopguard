@@ -4,8 +4,9 @@ Levanta el stack completo del SaaS en local/self-host con `docker compose`, sin 
 cloud gestionado. Cubre el flujo de escaneo on-demand (login → escaneo → histórico) y el del
 webhook de PR (worker Arq).
 
-> Estado: el `docker-compose.yml` y los Dockerfiles están **validados** (`docker compose config`).
-> El smoke `docker compose up` en vivo y el E2E (H5-T40) se ejecutan como cierre de la Ola 7b.
+> Estado: **verificado en vivo**. `docker compose up --build` levanta los 5 servicios sanos, las
+> migraciones se aplican solas (servicio `migrate`), el flujo on-demand funciona end-to-end y el
+> E2E Playwright (H5-T40) pasa contra el stack. Ver §7.
 
 ## 1. Arquitectura del stack
 
@@ -100,11 +101,25 @@ docker compose down               # parar (conserva volúmenes/datos)
 docker compose down -v            # parar y BORRAR datos (postgres_data, redis_data)
 ```
 
-## 7. Pendiente de verificación en vivo (cierre de T43)
+## 7. Verificación en vivo (completada)
 
-- Migraciones automáticas vía servicio `migrate` one-shot: **cableado** (`api`/`worker` dependen
-  de `service_completed_successfully`). Validado por parseo (`docker compose config`).
-- Smoke `docker compose up` completo y E2E del flujo crítico (H5-T40): pendiente de un daemon
-  Docker sano. Al cierre de la Ola 7b el content store local de Docker quedó corrupto (I/O error
-  en un blob, secuela del disco lleno); recuperar con más espacio libre + reset de Docker Desktop
-  antes del smoke.
+`docker compose up --build` levantado y verificado en self-host local:
+
+- **Servicios**: `postgres`, `redis`, `api`, `worker` y `web` en `healthy`; `migrate` one-shot
+  aplica el esquema y sale 0 antes de que arranquen `api`/`worker`.
+- **Salud**: `GET /api/v1/health` → `{"status":"ok","db":"ok","redis":"ok"}`.
+- **Flujo on-demand** end-to-end: escaneo inline (`reqeusts`→block por nonexistent+typosquat,
+  `requests`→allow), histórico, detalle y raw; aislamiento por usuario (scan ajeno → 404).
+- **Fail-closed**: guard sin sesión → 401; webhook sin secreto → 503; firma HMAC inválida → 204.
+- **E2E Playwright (H5-T40)**: ver `apps/web/e2e/README.md` (proyecto `guest` 3/3 + `authed` 2/2).
+
+Lo único que requiere GitHub real (fuera del self-host local): el login OAuth y el posteo del
+Check Run del webhook (`pull_request`). El resto del webhook (HMAC, dispatch, encolado) es local.
+
+### Operación: smoke rápido tras un arranque
+
+```bash
+docker compose up --build -d
+curl -s http://localhost:8000/api/v1/health            # {"status":"ok","db":"ok","redis":"ok"}
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/login   # 200
+```

@@ -3,7 +3,7 @@
 #
 # Uso:
 #   docker run ... api     → inicia uvicorn (modo API)
-#   docker run ... worker  → inicia el worker Arq (placeholder hasta Ola 5)
+#   docker run ... worker  → inicia el worker Arq (escaneo de PR en segundo plano)
 #
 # La distinción permite que api y worker compartan la misma imagen Docker
 # y se lancen como procesos separados según el comando pasado en compose.
@@ -20,18 +20,14 @@ case "${1}" in
       --log-level "${LOG_LEVEL:-info}"
     ;;
   worker)
-    # Placeholder hasta Ola 5 (H5-T27): el worker Arq real se conecta a Redis
-    # y procesa jobs de escaneo de PR. Por ahora solo valida que el entorno está
-    # configurado e informa claramente que el worker aún no está implementado.
-    echo "[worker] SlopGuard Arq worker — placeholder (Ola 5)."
-    echo "[worker] REDIS_URL = ${REDIS_URL:-<no configurado>}"
-    echo "[worker] El worker real se implementa en H5-T27. Proceso terminado."
-    exit 0
+    # Worker Arq real (H5-T27, Ola 5): consume jobs de escaneo de PR desde Redis y
+    # publica Check Run + comentario. `arq` descubre la cola y la tarea vía WorkerSettings.
+    exec arq app.worker.main.WorkerSettings
     ;;
   *)
     echo "Uso: docker run <imagen> [api|worker]"
     echo "  api    → uvicorn (FastAPI)"
-    echo "  worker → Arq worker (placeholder hasta Ola 5)"
+    echo "  worker → Arq worker (escaneo de PR en segundo plano)"
     exit 1
     ;;
 esac

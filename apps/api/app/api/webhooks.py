@@ -49,6 +49,7 @@ from ..github_app.installation_repo import (
     InstallationData,
     InstallationRepository,
 )
+from ..security.rate_limit_deps import RateLimit
 from ..security.webhook_signature import verify_signature
 from ..settings import Settings, get_settings
 from ..worker.deps import get_job_queue
@@ -68,6 +69,11 @@ _DEACTIVATION_STATUS: dict[str, str] = {
     INSTALL_ACTION_DELETED: STATUS_REVOKED,
     INSTALL_ACTION_SUSPEND: STATUS_SUSPENDED,
 }
+
+# Rate limit por IP del webhook público (único endpoint sin sesión). Límite más holgado que el
+# de auth porque GitHub puede ráfagar varios eventos por push. Fail-open sin Redis; el control de
+# acceso REAL del webhook sigue siendo la firma HMAC, no este límite.
+_WEBHOOK_RATE_LIMIT = RateLimit("webhook", settings_attr="rate_limit_webhook_per_minute")
 
 
 def _settings_dep() -> Settings:
@@ -116,7 +122,7 @@ async def _read_body_capped(request: Request, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
-@router.post("/github")
+@router.post("/github", dependencies=[Depends(_WEBHOOK_RATE_LIMIT)])
 async def github_webhook(
     request: Request,
     settings: SettingsDep,

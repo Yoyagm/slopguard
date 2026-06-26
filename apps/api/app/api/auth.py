@@ -41,6 +41,7 @@ from ..auth.session import (
 )
 from ..auth.state_store import StateStore
 from ..auth.user_repo import UserRepository
+from ..security.rate_limit_deps import RateLimit
 from ..services.github import (
     GitHubAuthError,
     GitHubOAuthClient,
@@ -72,8 +73,12 @@ UserRepoDep = Annotated[UserRepository, Depends(get_user_repository)]
 SecureSessionCookie = Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)]
 DevSessionCookie = Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME_DEV)]
 
+# Rate limit anti-abuso por IP de los endpoints públicos de login (no se limita /logout, que ya
+# exige una sesión válida). Fail-open sin Redis (ver `security.rate_limit`).
+_AUTH_RATE_LIMIT = RateLimit("auth")
 
-@router.get("/login")
+
+@router.get("/login", dependencies=[Depends(_AUTH_RATE_LIMIT)])
 async def login(settings: SettingsDep, state_store: StateStoreDep) -> RedirectResponse:
     """Inicia OAuth: emite `state` single-use y redirige a GitHub (R1.1)."""
     client_id = settings.github_client_id
@@ -93,7 +98,7 @@ async def login(settings: SettingsDep, state_store: StateStoreDep) -> RedirectRe
     return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/callback")
+@router.get("/callback", dependencies=[Depends(_AUTH_RATE_LIMIT)])
 async def callback(
     settings: SettingsDep,
     state_store: StateStoreDep,

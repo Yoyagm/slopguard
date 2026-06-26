@@ -1,0 +1,16 @@
+# Contexto de build compartido (la raíz del monorepo es el contexto tanto del API como del web).
+# Excluye cachés y artefactos pesados/sensibles; nunca deben entrar a ninguna imagen.
+**/node_modules
+**/.venv
+**/.next
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.git
+.github
+# Secretos: jamás en una imagen (entran por env en runtime). Se conservan los .env.example.
+**/.env
+**/.env.*
+!**/.env.example

@@ -61,9 +61,10 @@ services:
     # Comando explícito para el entrypoint: "api" inicia uvicorn.
     command: ["api"]
     env_file:
-      # Carga las variables desde apps/api/.env (gitignored).
-      # Copiar apps/api/.env.example → apps/api/.env y rellenar antes de `up`.
-      - apps/api/.env
+      # Variables desde apps/api/.env (gitignored). OPCIONAL: sin él, el API arranca en modo
+      # development con defaults. Para OAuth/GitHub App/LLM, copia apps/api/.env.example → .env.
+      - path: apps/api/.env
+        required: false
     environment:
       # Sobrescribe DATABASE_URL / REDIS_URL para apuntar a los servicios del compose.
       # Estas URLs son internas a la red Docker (nombre de servicio como host).
@@ -83,18 +84,18 @@ services:
       retries: 5
       start_period: 10s
 
-  # ── Worker (Arq — placeholder hasta Ola 5) ────────────────────────────────
+  # ── Worker (Arq — escaneo de PR en segundo plano) ─────────────────────────
   worker:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
       target: runtime
-    restart: "no"           # placeholder: sale limpiamente; en Ola 5 será unless-stopped
-    # Comando "worker" activa la rama del entrypoint que imprime el placeholder y sale.
-    # En Ola 5 este comando pasará a: arq app.worker.main.WorkerSettings
+    restart: unless-stopped
+    # "worker" → el entrypoint ejecuta `arq app.worker.main.WorkerSettings`.
     command: ["worker"]
     env_file:
-      - apps/api/.env
+      - path: apps/api/.env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://slopguard:slopguard@postgres:5432/slopguard
       REDIS_URL: redis://redis:6379/0
@@ -103,6 +104,35 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # `arq --check` lee la clave de salud que el worker escribe en Redis y sale 0 si está vivo.
+      test: ["CMD", "arq", "app.worker.main.WorkerSettings", "--check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Web (Next.js — dashboard) ──────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # URL pública del API que el NAVEGADOR usa (corre en el host, no en la red Docker):
+        # por eso apunta al puerto publicado del api en localhost, no al nombre de servicio.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/login', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   postgres_data:

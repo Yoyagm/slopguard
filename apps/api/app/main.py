@@ -20,6 +20,12 @@ from .api.scans import router as scans_router
 from .api.webhooks import router as webhooks_router
 from .github_app.deps import AppConfigError
 from .logging_config import configure_logging
+from .middleware import RequestIdMiddleware
+from .security.rate_limit_deps import (
+    RateLimitExceeded,
+    rate_limit_error_body,
+    set_rate_limit_headers,
+)
 from .settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -35,6 +41,11 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="Backend que envuelve el motor SlopGuard (zero-deps) como librería in-process.",
     )
+
+    # Correlación request-id: se añade DESPUÉS de CORS para quedar como el middleware más
+    # externo (add_middleware apila el último como outermost), de modo que toda línea de log
+    # de la petición —incluido el preflight CORS— lleve el mismo `request_id`.
+    app.add_middleware(RequestIdMiddleware)
 
     # CORS endurecido (NFR-Seg): orígenes explícitos + credenciales. `allow_headers` se
     # restringe a lo que el front necesita; `allow_headers=["*"]` con `allow_credentials=True`
@@ -76,6 +87,23 @@ def create_app() -> FastAPI:
                 }
             },
         )
+
+    @app.exception_handler(RateLimitExceeded)
+    async def _rate_limit_handler(
+        _request: Request, exc: RateLimitExceeded
+    ) -> JSONResponse:
+        """Límite por IP superado ⇒ 429 con el envelope estable + `Retry-After` y `X-RateLimit-*`.
+
+        El cuerpo NO filtra la IP, la clave ni el contador; solo un mensaje saneado y el
+        `request_id` para soporte. `Retry-After` (segundos) guía al cliente bien comportado.
+        """
+        response = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=rate_limit_error_body(),
+        )
+        set_rate_limit_headers(response, exc.result)
+        response.headers["Retry-After"] = str(exc.result.reset_seconds)
+        return response
 
     return app
 

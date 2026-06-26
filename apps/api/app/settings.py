@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     # es holgado. Configurable por entorno para endurecerlo (NFR-Seg, R6.1, ADR-4).
     webhook_max_body_bytes: int = 1_048_576
 
+    # Rate limiting de endpoints públicos (H5-T42, NFR-Seg). FAIL-OPEN: sin `redis_url` o con
+    # Redis caído NO se limita (es protección, no autenticación) — ver `security.rate_limit`.
+    # `rate_limit_enabled` permite apagarlo globalmente; los límites son por minuto y por IP.
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 60  # auth (login/callback): tráfico interactivo humano
+    # Los webhooks de GitHub pueden ráfagar (varios eventos por push); límite más holgado.
+    rate_limit_webhook_per_minute: int = 120
+    # Confiar en `X-Forwarded-For` SOLO si hay un proxy de confianza por delante (nginx, ALB).
+    # Por defecto False: usamos `request.client.host`. Si True, tomamos el PRIMER valor de XFF
+    # (el cliente original); confiar en toda la cadena permitiría spoofear el límite.
+    rate_limit_trust_forwarded_for: bool = False
+
     @property
     def is_production(self) -> bool:
         return self.environment.lower() == "production"

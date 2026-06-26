@@ -72,23 +72,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configurar pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          # Usa la versión declarada en package.json (campo packageManager) si existe,
-          # o la más reciente compatible si no. Se fija aquí para reproducibilidad.
-          version: latest
-
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: pnpm
-
-      - name: Instalar dependencias web
-        working-directory: apps/web
-        run: pnpm install --frozen-lockfile || pnpm install
-
+      # NOTA: apps/web es aún un placeholder (sin scaffold Next.js ni pnpm-lock.yaml).
+      # Habilitar `cache: pnpm` o `pnpm install --frozen-lockfile` aquí rompe el job
+      # porque no hay lockfile que cachear/resolver. En la Ola 6 (H5-T31/T32), cuando
+      # exista el scaffold real + lockfile, este job pasa a: pnpm/action-setup ->
+      # setup-node (cache: pnpm) -> pnpm install --frozen-lockfile -> typecheck + build.
       - name: Placeholder (scaffold Next.js llega en Ola 6, H5-T31)
         working-directory: apps/web
-        run: pnpm run placeholder
+        run: echo "apps-web placeholder verde; scaffold Next.js y build real llegan en la Ola 6 (H5-T31/T32)"

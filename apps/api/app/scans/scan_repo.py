@@ -16,7 +16,7 @@ import uuid
 from typing import Any, Protocol
 
 from anyio import to_thread
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..db.models import Scan, ScanResult
@@ -149,30 +149,77 @@ class SqlScanRepository:
             "exit_code": dto.summary.exit_code,
         }
 
-        scan = Scan(
-            id=scan_id,
-            user_id=user_id,
-            repo_id=repo_id,
-            origin=origin,
-            ecosystem=dto.ecosystem,
-            schema_version=dto.schema_version,
-            tool_version=dto.tool_version,
-            exit_code=dto.summary.exit_code,
-            summary=summary_dict,
-            error_category=dto.error_category,
-            report_json=report_json,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            created_at=dto.created_at,
-        )
-        results = [_build_scan_result(scan_id, dep) for dep in dto.results]
-
         with self._session_factory() as session:
+            # Idempotencia del escaneo de PR (R6.6, ADR-2): re-procesar el mismo (repo, pr,
+            # head_sha) ACTUALIZA la misma fila en vez de insertar (el índice único parcial
+            # `uq_scans_pr_idempotency` la haría fallar con IntegrityError). GitHub reentrega
+            # webhooks y `synchronize` es frecuente, así que el re-sync debe ser no-duplicante.
+            existing = self._find_existing_pr_scan(session, origin, repo_id, pr_number, head_sha)
+            if existing is not None:
+                return self._update_pr_scan(session, existing, dto, summary_dict, report_json)
+
+            scan = Scan(
+                id=scan_id,
+                user_id=user_id,
+                repo_id=repo_id,
+                origin=origin,
+                ecosystem=dto.ecosystem,
+                schema_version=dto.schema_version,
+                tool_version=dto.tool_version,
+                exit_code=dto.summary.exit_code,
+                summary=summary_dict,
+                error_category=dto.error_category,
+                report_json=report_json,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                created_at=dto.created_at,
+            )
             session.add(scan)
-            session.add_all(results)
+            session.add_all([_build_scan_result(scan_id, dep) for dep in dto.results])
             session.commit()
 
         return scan_id
+
+    def _find_existing_pr_scan(
+        self,
+        session: Session,
+        origin: str,
+        repo_id: uuid.UUID | None,
+        pr_number: int | None,
+        head_sha: str | None,
+    ) -> Scan | None:
+        """Busca la fila de un escaneo de PR ya persistido (clave de idempotencia, R6.6)."""
+        if origin != "pull_request" or repo_id is None or pr_number is None or head_sha is None:
+            return None
+        return session.execute(
+            select(Scan).where(
+                Scan.origin == "pull_request",
+                Scan.repo_id == repo_id,
+                Scan.pr_number == pr_number,
+                Scan.head_sha == head_sha,
+            )
+        ).scalar_one_or_none()
+
+    def _update_pr_scan(
+        self,
+        session: Session,
+        scan: Scan,
+        dto: ScanDTO,
+        summary_dict: dict[str, object],
+        report_json: dict[str, object],
+    ) -> uuid.UUID:
+        """Re-sella un escaneo de PR existente con el nuevo reporte (reemplaza sus resultados)."""
+        scan.ecosystem = dto.ecosystem
+        scan.schema_version = dto.schema_version
+        scan.tool_version = dto.tool_version
+        scan.exit_code = dto.summary.exit_code
+        scan.summary = summary_dict
+        scan.error_category = dto.error_category
+        scan.report_json = report_json
+        session.execute(delete(ScanResult).where(ScanResult.scan_id == scan.id))
+        session.add_all([_build_scan_result(scan.id, dep) for dep in dto.results])
+        session.commit()
+        return scan.id
 
 
     def _list_by_user_sync(
@@ -378,6 +425,9 @@ class FakeScanRepository:
         self.calls: list[dict[str, object]] = []
         # Almacén interno: scan_id → (user_id, repo_id, ScanDTO re-sellado con scan_id)
         self._store: dict[uuid.UUID, tuple[uuid.UUID, uuid.UUID | None, ScanDTO]] = {}
+        # Índice de idempotencia de PR: (repo_id, pr_number, head_sha) → scan_id (espejo del
+        # índice único parcial `uq_scans_pr_idempotency` del SqlScanRepository, R6.6).
+        self._pr_index: dict[tuple[uuid.UUID, int, str], uuid.UUID] = {}
 
     async def persist(
         self,
@@ -392,7 +442,10 @@ class FakeScanRepository:
         # Contrato: la persistencia genera el id autoritativo e IGNORA dto.scan_id de
         # entrada; el DTO almacenado se re-sella con él para que el round-trip POST→GET
         # devuelva el mismo scan_id en URL y body (paridad con SqlScanRepository).
-        scan_id = uuid.uuid4()
+        pr_key = self._pr_key(origin, repo_id, pr_number, head_sha)
+        # Idempotencia de PR: re-procesar el mismo head_sha re-usa el scan_id (UPDATE), no inserta.
+        scan_id = self._pr_index.get(pr_key) if pr_key is not None else None
+        scan_id = scan_id or uuid.uuid4()
         sealed_dto = dto.model_copy(update={"scan_id": scan_id})
         self.calls.append(
             {
@@ -406,7 +459,18 @@ class FakeScanRepository:
             }
         )
         self._store[scan_id] = (user_id, repo_id, sealed_dto)
+        if pr_key is not None:
+            self._pr_index[pr_key] = scan_id
         return scan_id
+
+    @staticmethod
+    def _pr_key(
+        origin: str, repo_id: uuid.UUID | None, pr_number: int | None, head_sha: str | None
+    ) -> tuple[uuid.UUID, int, str] | None:
+        """Clave de idempotencia de un escaneo de PR, o None si no es un PR completo."""
+        if origin != "pull_request" or repo_id is None or pr_number is None or head_sha is None:
+            return None
+        return (repo_id, pr_number, head_sha)
 
     async def list_by_user(
         self,
@@ -464,7 +528,8 @@ class FakeScanRepository:
 
     @property
     def persisted_count(self) -> int:
-        return len(self.calls)
+        """Filas únicas persistidas (un PR re-procesado con el mismo head_sha cuenta una vez)."""
+        return len(self._store)
 
     def last_call(self) -> dict[str, object]:
         return self.calls[-1]

@@ -75,6 +75,15 @@ _VALID_STATUSES = frozenset({STATUS_ACTIVE, STATUS_REVOKED, STATUS_SUSPENDED})
 
 
 @dataclass(frozen=True, slots=True)
+class PrRepoTarget:
+    """Dueño + repo interno de un PR, resuelto desde los ids de GitHub (worker, R5.1/R6.2)."""
+
+    user_id: uuid.UUID  # users.id del dueño de la instalación.
+    repo_id: uuid.UUID  # repos.id interno (FK de scans.repo_id).
+    full_name: str  # "owner/repo", para la PR/contents API.
+
+
+@dataclass(frozen=True, slots=True)
 class RepoData:
     """Datos mínimos de un repo accesible (de `repositories[]` del webhook, design §3.1)."""
 
@@ -153,6 +162,16 @@ class InstallationRepository(Protocol):
         - La instalación asociada no está `active` (R2.4: instalación revocada ⇒ sin acceso).
         El caller debe responder 422 "repo no disponible" en todos estos casos (no distinguir
         la causa concreta evita enumerar repos de otros usuarios).
+        """
+        ...
+
+    async def resolve_pr_target(
+        self, *, installation_id: int, github_repo_id: int
+    ) -> PrRepoTarget | None:
+        """Resuelve (dueño, repo interno, full_name) de un PR desde los ids de GitHub (worker).
+
+        None si no existe una instalación ACTIVA con ese `installation_id` que dé acceso al repo
+        `github_repo_id` (fail-closed: un repo de una instalación revocada no se escanea).
         """
         ...
 
@@ -263,6 +282,31 @@ class SqlInstallationRepository:
             github_installation_id=row.gh_installation_id,
             full_name=row.full_name,
         )
+
+    async def resolve_pr_target(
+        self, *, installation_id: int, github_repo_id: int
+    ) -> PrRepoTarget | None:
+        return await to_thread.run_sync(
+            self._resolve_pr_target_sync, installation_id, github_repo_id
+        )
+
+    def _resolve_pr_target_sync(
+        self, installation_id: int, github_repo_id: int
+    ) -> PrRepoTarget | None:
+        """Resuelve dueño + repo interno de un PR (instalación activa por installation_id)."""
+        with self._session_factory() as session:
+            row = session.execute(
+                select(Repo.id, Repo.full_name, GithubInstallation.user_id)
+                .join(GithubInstallation, Repo.installation_id == GithubInstallation.id)
+                .where(
+                    GithubInstallation.installation_id == installation_id,
+                    GithubInstallation.status == STATUS_ACTIVE,
+                    Repo.github_repo_id == github_repo_id,
+                )
+            ).one_or_none()
+        if row is None:
+            return None
+        return PrRepoTarget(user_id=row.user_id, repo_id=row.id, full_name=row.full_name)
 
     def _list_for_user_sync(self, user_id: uuid.UUID) -> list[InstallationSummary]:
         with self._session_factory() as session:
@@ -536,6 +580,21 @@ class FakeInstallationRepository:
         state.status = status
         self.status_changes.append((installation_id, status))
         return True
+
+    async def resolve_pr_target(
+        self, *, installation_id: int, github_repo_id: int
+    ) -> PrRepoTarget | None:
+        state = self._installations.get(installation_id)
+        if state is None or state.status != STATUS_ACTIVE:
+            return None
+        repo = state.repos.get(github_repo_id)
+        if repo is None:
+            return None
+        return PrRepoTarget(
+            user_id=state.user_id,
+            repo_id=state.repo_internal_ids[github_repo_id],
+            full_name=repo.full_name,
+        )
 
     async def list_for_user(self, user_id: uuid.UUID) -> list[InstallationSummary]:
         return [

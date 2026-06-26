@@ -23,14 +23,18 @@ dependencies = [
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
   "cryptography>=43",     # AEAD (AES-256-GCM) para cifrado de secretos en reposo (H5-T06, R8.2)
+  "httpx>=0.27",          # cliente async para hablar con GitHub OAuth/API (H5-T11)
+  "redis>=5",             # state OAuth single-use (GETDEL) + sesión de servidor (H5-T11, ADR-4)
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
-  "httpx>=0.27",          # TestClient de Starlette
+  "pytest-asyncio>=0.23", # tests async del flujo OAuth (H5-T11)
+  "httpx>=0.27",          # TestClient de Starlette (también dep de runtime, ver arriba)
   "ruff>=0.4",
   "mypy>=1.10",
+  "types-redis>=4",       # stubs de tipos de redis para mypy strict
 ]
 
 [tool.setuptools.packages.find]
@@ -59,3 +63,6 @@ exclude = ["alembic/versions/"]
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
 testpaths = ["tests"]
+# Los tests del flujo OAuth (H5-T11) son corrutinas: pytest-asyncio en modo auto las ejecuta
+# sin tener que decorar cada uno con @pytest.mark.asyncio.
+asyncio_mode = "auto"

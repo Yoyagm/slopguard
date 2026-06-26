@@ -101,11 +101,18 @@ class Settings(BaseSettings):
             raise ValueError(f"encryption_key inválida en producción: {exc}") from exc
 
     def _require_hardened_cors(self) -> None:
-        """En producción, `cors_origins` no admite comodines ni orígenes no-HTTPS.
+        """En producción, `cors_origins` no admite vacío, comodines ni orígenes no-HTTPS.
 
         Con `allow_credentials=True` un origen comodín o un esquema sin TLS abriría el flujo a
-        robo de cookies de sesión; se rechaza en boot en lugar de degradar en runtime.
+        robo de cookies de sesión; se rechaza en boot en lugar de degradar en runtime. Además,
+        una lista vacía dejaría sin origen base al `redirect_uri` de OAuth (callback relativo,
+        login roto): se exige al menos un origen https (fail-closed, refuerza SEC del redirect).
         """
+        if not self.cors_origins:
+            raise ValueError(
+                "cors_origins no puede estar vacío en producción: el login OAuth necesita un "
+                "origen base https para el redirect_uri (fail-closed)."
+            )
         for origin in self.cors_origins:
             if origin == "*":
                 raise ValueError(

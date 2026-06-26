@@ -6,6 +6,41 @@ y el versionado [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-25
+
+Cuarto hito (**Hito 4**): **adaptador npm**. SlopGuard analiza ahora `package.json` con
+paridad funcional respecto a PyPI (las cuatro capas, los exit codes y el scoring se
+comportan igual). El motor de capas/scoring permanece **agnóstico de ecosistema**: toda la
+divergencia npm↔PyPI vive en el adaptador o tras tablas cerradas de ecosistema (cero
+ramificación `if ecosystem == "npm"` en `core.layers`/`core.scoring`).
+
+### Añadido
+
+- **Ecosistema npm**: flag `--ecosystem {pypi,npm}` (override) y autodetección por manifiesto
+  (`package.json`→npm; `requirements*.txt`/`pyproject.toml`→pypi). Por stdin `--ecosystem` es
+  obligatorio (R1.5).
+- **Parser `package.json`** (Forma A): `dependencies`+`devDependencies`, normalización de
+  paquetes **scoped** (`@scope/name`, preserva `/`, sin colapso PEP 503), y exclusión de
+  specifiers no-registro (`file:`/`link:`/`workspace:`/`git+`/`github:`/tarballs http(s), R2.7).
+- **`NpmAdapter`**: allowlist `registry.npmjs.org` solo por instancia (nunca global), URL
+  anti path-traversal (`quote(name, safe="")`), cap de respuesta → UNVERIFIABLE, charset
+  fail-closed de un único núcleo, dataset npm top-8k embebido + verificado con SHA-256.
+- **`schema_version` 1.2**: añade el campo raíz **`ecosystem`** (`"pypi"`|`"npm"`) a la salida
+  JSON. Cambio estrictamente aditivo sobre 1.1.
+- **Threat-intel y Capa 4 por ecosistema**: OSV y watchlist aislados por **clave de caché Y
+  validador de blob** (un escaneo npm jamás reutiliza un blob pypi del mismo nombre, y
+  viceversa); `prompt_version` del LLM sube a `h4-v1`.
+- **Docs**: [runbook de regeneración del dataset npm](docs/runbook-dataset-npm.md) (R5.4) y
+  [ADR-0001](docs/adr/0001-texto-ecosistema-en-detail-capas-0-2.md).
+- **CI**: el gate de cobertura crítica (≥95%) incluye ahora `core/adapters/npm.py` (100%) y
+  `core/manifests/package_json.py` (98%).
+
+### Sin cambios para PyPI (R11)
+
+Cero regresión: el flujo PyPI es idéntico al Hito 3. El único cambio heredado es el sello
+`prompt_version` (`h3-v1`→`h4-v1`), que afecta solo la clave de caché LLM y la línea de
+transparencia, nunca el veredicto/score/exit code.
+
 ### Seguridad
 
 - **Rechazo de constantes JSON no finitas en TODO fetch de registro/threat-intel**

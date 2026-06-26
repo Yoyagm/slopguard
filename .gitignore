@@ -15,3 +15,8 @@ coverage.xml
 build/
 dist/
 *.egg-info/
+
+# Node / pnpm (el workspace del frontend hoistea node_modules a la raíz del monorepo)
+node_modules/
+.next/
+*.tsbuildinfo

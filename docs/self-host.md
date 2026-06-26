@@ -13,6 +13,7 @@ webhook de PR (worker Arq).
 |---|---|---|---|
 | `postgres` | `postgres:16-alpine` | Persistencia (usuarios, instalaciones, repos, escaneos). | `127.0.0.1:5432` |
 | `redis` | `redis:7-alpine` | Cola Arq + `state` OAuth + rate limiting. | `127.0.0.1:6379` |
+| `migrate` | `apps/api/Dockerfile` (alembic) | One-shot: aplica el esquema (`alembic upgrade head`) y sale. | — |
 | `api` | `apps/api/Dockerfile` (uvicorn) | FastAPI: OAuth, REST, webhooks, motor in-process. | `8000` |
 | `worker` | `apps/api/Dockerfile` (arq) | Escaneo de PR en segundo plano (Check Run + comentario). | — |
 | `web` | `apps/web/Dockerfile` (Next.js standalone) | Dashboard: login, escaneo, reportes, histórico. | `3000` |
@@ -32,19 +33,15 @@ ni `encryption_key`, que solo se validan en `production`). El flujo OAuth/GitHub
 configuración (paso 5); el resto del stack levanta out-of-the-box.
 
 ```bash
-# 1. Construye e inicia infra + servicios.
-docker compose up --build -d postgres redis
-
-# 2. Aplica las migraciones de la base de datos (Alembic) contra el Postgres del compose.
-#    Se ejecutan desde el host (la venv del API ya tiene alembic); el Postgres está publicado
-#    en 127.0.0.1:5432, así que no hace falta meter Alembic en la imagen.
-cd apps/api && \
-  DATABASE_URL=postgresql+psycopg://slopguard:slopguard@localhost:5432/slopguard \
-  .venv/bin/alembic upgrade head && cd ../..
-
-# 3. Inicia el resto del stack.
-docker compose up --build -d api worker web
+# Construye e inicia todo el stack con un solo comando. El servicio one-shot `migrate` aplica
+# las migraciones Alembic ANTES de que api y worker arranquen (depends_on: migrate →
+# service_completed_successfully), así que no hay paso manual de base de datos.
+docker compose up --build -d
 ```
+
+> Migraciones: viven dentro de la imagen (`/app/alembic`) y las ejecuta el servicio `migrate`.
+> Para correrlas a mano contra el Postgres publicado (p.ej. tras editar un modelo):
+> `docker compose run --rm migrate` (vuelve a aplicar `upgrade head`, idempotente).
 
 Comprueba salud y accede:
 
@@ -105,7 +102,9 @@ docker compose down -v            # parar y BORRAR datos (postgres_data, redis_d
 
 ## 7. Pendiente de verificación en vivo (cierre de T43)
 
-- Smoke `docker compose up` completo y E2E del flujo crítico (H5-T40).
-- Opcional: servicio `migrate` one-shot en compose (`alembic upgrade head`) del que dependan
-  `api`/`worker` (`service_completed_successfully`) para un arranque 100% automático, en lugar del
-  paso manual de migraciones del punto 3.2.
+- Migraciones automáticas vía servicio `migrate` one-shot: **cableado** (`api`/`worker` dependen
+  de `service_completed_successfully`). Validado por parseo (`docker compose config`).
+- Smoke `docker compose up` completo y E2E del flujo crítico (H5-T40): pendiente de un daemon
+  Docker sano. Al cierre de la Ola 7b el content store local de Docker quedó corrupto (I/O error
+  en un blob, secuela del disco lleno); recuperar con más espacio libre + reset de Docker Desktop
+  antes del smoke.

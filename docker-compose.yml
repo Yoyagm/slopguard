@@ -49,6 +49,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # ── Migrate (Alembic — one-shot, corre y sale) ─────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    # "migrate" → el entrypoint ejecuta `alembic upgrade head` y termina (no es un servicio
+    # de larga vida). api y worker dependen de su finalización exitosa.
+    command: ["migrate"]
+    # restart "no": es one-shot; no debe reiniciarse al salir 0.
+    restart: "no"
+    env_file:
+      - path: apps/api/.env
+        required: false
+    environment:
+      # Solo necesita la URL de Postgres (alembic no toca Redis).
+      DATABASE_URL: postgresql+psycopg://slopguard:slopguard@postgres:5432/slopguard
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ── API (FastAPI + uvicorn) ────────────────────────────────────────────────
   api:
     build:
@@ -77,6 +98,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        # Arranca solo tras aplicar el esquema (one-shot que sale 0).
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')\""]
       interval: 10s
@@ -104,6 +128,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        # Arranca solo tras aplicar el esquema (one-shot que sale 0).
+        condition: service_completed_successfully
     healthcheck:
       # `arq --check` lee la clave de salud que el worker escribe en Redis y sale 0 si está vivo.
       test: ["CMD", "arq", "app.worker.main.WorkerSettings", "--check"]

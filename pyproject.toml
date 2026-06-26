@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slopguard"
-version = "0.3.0"
-description = "Guardian pre-instalacion contra slopsquatting: detecta dependencias Python alucinadas, typosquatting o maliciosas antes de instalarlas."
+version = "0.4.0"
+description = "Guardian pre-instalacion contra slopsquatting: detecta dependencias Python (PyPI) y npm alucinadas, typosquatting o maliciosas antes de instalarlas."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -42,6 +42,11 @@ código de los paquetes analizados:
 públicos) y un dataset embebido verificado con SHA-256. La **Capa 4 (LLM)** es *opt-in*
 (requiere `ANTHROPIC_API_KEY`); desactivada por defecto, el resto opera sin LLM ni pagos.
 
+Desde el **Hito 4**, SlopGuard analiza dos ecosistemas con paridad funcional: **PyPI** y
+**npm** (`package.json`). El ecosistema se autodetecta por el nombre del manifiesto o se
+fuerza con `--ecosystem {pypi,npm}`. El motor de capas es **agnóstico de ecosistema**: toda
+la divergencia npm↔PyPI vive en el adaptador. Ver [Ecosistemas: PyPI y npm](#ecosistemas-pypi-y-npm-hito-4).
+
 ---
 
 ## Instalación
@@ -496,10 +501,11 @@ umbral_warn = 45
 
 ```
 --format {human,json}       Formato de salida (default: human)
+--ecosystem {pypi,npm}      Fuerza el ecosistema (default: autodetectado por el manifiesto)
 --no-cache                  Ignora la cache y no escribe en ella
 --strict                    Trata cualquier warn como block (exit 2)
 --config <ruta>             Ruta explicita al archivo de configuracion
---manifest-type {requirements,pyproject,freeze}  Fuerza el tipo de manifiesto
+--manifest-type {requirements,pyproject,freeze}  Fuerza el tipo de manifiesto (solo pypi)
 --umbral-block N            Override del umbral de block
 --umbral-warn N             Override del umbral de warn
 --edad-minima-dias N        Override del umbral de edad
@@ -512,14 +518,52 @@ umbral_warn = 45
 
 ---
 
-## Formato JSON para CI (`schema_version` 1.1)
+## Ecosistemas: PyPI y npm (Hito 4)
 
-El campo `schema_version: "1.1"` garantiza compatibilidad hacia adelante. El cambio
-de 1.0 a 1.1 es **estrictamente aditivo**: se anade el campo `advisories[]` (siempre
-presente, vacio si no hay malicia) y seniales de `layer:3`. Los campos de 1.0 no se
-modifican ni eliminan.
+SlopGuard analiza **PyPI** y **npm** con paridad funcional (las cuatro capas operan igual;
+solo cambian el registro consultado, el dataset de typosquatting y las reglas de nombre).
 
-Los campos estables por resultado en schema 1.1 son:
+**Autodetección por manifiesto** (R1.2):
+
+| Manifiesto | Ecosistema |
+|---|---|
+| `package.json` | npm |
+| `requirements*.txt`, cualquier `.txt` | pypi |
+| `pyproject.toml` | pypi |
+
+**Override explícito** — `--ecosystem {pypi,npm}` gana siempre sobre la autodetección:
+
+```bash
+slopguard scan package.json                 # npm (autodetectado)
+slopguard scan deps.txt --ecosystem npm     # fuerza npm pese al nombre
+cat package.json | slopguard scan - --ecosystem npm   # stdin EXIGE --ecosystem
+```
+
+Por **stdin** (`-`) no hay nombre del que inferir: `--ecosystem` es **obligatorio** (R1.5),
+si falta es error de configuración accionable (no se asume un ecosistema por defecto).
+
+Particularidades de npm:
+
+- **Paquetes scoped** (`@scope/name`): se normalizan preservando el `/` (sin colapso PEP 503);
+  la Capa 1 solo compara contra candidatos del **mismo scope** (anti falso-positivo).
+- **Specifiers no-registro** se **omiten** del escaneo (no se consultan al registry): `file:`,
+  `link:`, `workspace:`, `git://`, `git+…`, `github:`, tarballs `http(s)://` (R2.7).
+- **Dataset npm** embebido (~8000 nombres) verificado con SHA-256; regenerable de forma
+  reproducible — ver [runbook del dataset npm](docs/runbook-dataset-npm.md).
+- El texto narrativo `signals[].detail` de las Capas 0/2 puede decir "PyPI" para una dep npm
+  (deuda cosmética documentada en [ADR-0001](docs/adr/0001-texto-ecosistema-en-detail-capas-0-2.md));
+  el campo estructural `ecosystem` del JSON **siempre** es correcto.
+
+---
+
+## Formato JSON para CI (`schema_version` 1.2)
+
+El campo `schema_version` garantiza compatibilidad hacia adelante; los cambios son
+**estrictamente aditivos**. Evolución: `1.0` → `1.1` (añade `advisories[]` y señales
+`layer:3`) → **`1.2`** (añade el campo de nivel raíz **`ecosystem`**: `"pypi"` | `"npm"`).
+Los campos previos no se modifican ni eliminan.
+
+Los campos estables por resultado son:
 
 ```
 name            string   nombre normalizado (PEP 503)

@@ -30,6 +30,8 @@ class ScanRequest(BaseModel):
     # Requeridos si source=repo (T24)
     repo_id: str | None = Field(None, description="UUID del repo conectado (source=repo)")
     path: str | None = Field(None, description="Ruta del manifiesto en el repo (source=repo)")
+    # Ref opcional (rama, tag o SHA). None = rama por defecto del repo.
+    ref: str | None = Field(None, description="Rama, tag o SHA (source=repo). None = default.")
 
     # Override de ecosistema (opcional); None = autodetección; override gana (R3.2).
     # Allowlist: un valor fuera de dominio → 422 antes de tocar el motor.

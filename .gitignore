@@ -3,6 +3,9 @@
 __pycache__/
 *.py[cod]
 
+# Secretos de entorno de la raíz (producción: DOMAIN). Las plantillas *.example SÍ se versionan.
+/.env
+
 # Cachés de herramientas
 .mypy_cache/
 .ruff_cache/

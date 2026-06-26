@@ -1,0 +1,37 @@
+# Caddyfile — reverse proxy de SlopGuard SaaS (despliegue VPS con dominio + TLS).
+#
+# Unifica el front (Next.js) y el API (FastAPI) bajo UN solo origen HTTPS, con TLS
+# automático de Let's Encrypt. Esto simplifica el login (callback same-origin) y CORS:
+# el navegador habla siempre con https://{$DOMAIN} y Caddy enruta hacia adentro.
+#
+# `{$DOMAIN}` viene del entorno del contenedor caddy (ver docker-compose.prod.yml),
+# que a su vez lo toma del `.env` de la raíz del repo.
+#
+# Para recibir avisos de expiración de certificados, añade un bloque global:
+#   { email tu-email@example.com }
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# HSTS: fuerza HTTPS en visitas futuras (defensa contra downgrade/SSL-strip). Solo se sirve
+	# sobre TLS, así que no afecta al redirect inicial http→https que Caddy hace automáticamente.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# El API de FastAPI sirve TODO bajo /api/* (incl. /api/v1/...). El front NO tiene rutas
+	# /api propias, así que este prefijo es exclusivo del API.
+	handle /api/* {
+		reverse_proxy api:8000 {
+			# Reescribe X-Forwarded-For con la IP REAL del peer (descarta cualquier XFF que el
+			# cliente intente inyectar). Sin esto, el rate-limit por IP del API (que toma el
+			# primer valor de XFF) sería spoofeable; con el default de Caddy, además colapsaría a
+			# un único cubo global = auto-DoS del login. Asume que Caddy es el borde directo (sin
+			# CDN/otro proxy delante); si lo hubiera, ajustar la cadena de confianza.
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	# Todo lo demás (UI Next.js: /, /login, /scan, /history, /dashboard, /_next/*) → web.
+	handle {
+		reverse_proxy web:3000
+	}
+}

@@ -33,14 +33,17 @@ RUN apt-get update \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# 1. Copia e instala el motor zero-deps de forma editable (src/slopguard).
+# 1. Copia e instala el motor zero-deps (src/slopguard) en modo NORMAL (no editable).
+#    Editable dejaría un enlace .pth a /build/src que NO existe en el runtime (otra ruta),
+#    rompiendo `import slopguard`. Instalado normal, el paquete queda en site-packages y
+#    viaja dentro de /opt/venv → imagen autocontenida.
 #    Al ser zero-deps, no tiene dependencias transitivas que resolver.
 #    El README.md raíz es OBLIGATORIO: pyproject.toml lo declara `readme = "README.md"`
 #    y setuptools lo lee al construir la metadata (sin él, `pip install` aborta).
 COPY src/ /build/src/
 COPY pyproject.toml /build/pyproject.toml
 COPY README.md /build/README.md
-RUN pip install -e /build
+RUN pip install /build
 
 # 2. Copia e instala el paquete API (apps/api).
 #    Se instala después del motor para que `slopguard` ya esté disponible.
@@ -60,11 +63,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# Copia el venv construido en el stage builder.
+# Copia el venv construido en el stage builder (incluye el motor slopguard ya instalado
+# en site-packages, por eso NO hace falta copiar src/ aparte).
 COPY --from=builder /opt/venv /opt/venv
-
-# Copia el código fuente del motor (necesario para el install editable).
-COPY --from=builder /build/src /app/src
 
 # Copia el código fuente del API.
 COPY --from=builder /build/apps/api/app /app/app

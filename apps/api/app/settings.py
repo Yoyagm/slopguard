@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     # Front (CORS).
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    # URL base del frontend. La usan los endpoints OAuth (navegación de página completa) para
+    # redirigir de vuelta al dashboard tras el login y para mostrar errores en la pantalla de
+    # login (`/login?error=…`) en vez de devolver JSON crudo al navegador. En self-host con el
+    # API y el web en puertos distintos, DEBE ser la URL pública del web (no una ruta relativa).
+    web_base_url: str = "http://localhost:3000"
+
     # Scan Service (Ola 2, ADR-3): frontera in-process con el motor.
     # Timeout de envoltura (segundos): red de seguridad de PROCESO sobre `engine.scan_*`,
     # NO un reemplazo del fail-closed del motor. Si salta → error saneado (502/504),

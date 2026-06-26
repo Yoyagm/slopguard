@@ -140,7 +140,8 @@ def test_r1_2_callback_valido_abre_sesion_y_redirige_al_dashboard(
     )
 
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/dashboard"
+    # URL absoluta del front (web_base_url): el API y el web pueden vivir en orígenes distintos.
+    assert resp.headers["location"] == "http://localhost:3000/dashboard"
 
     # La cookie de sesión es httpOnly + SameSite=Lax (ADR-4): no accesible por JS, anti-CSRF.
     set_cookie = resp.headers["set-cookie"]

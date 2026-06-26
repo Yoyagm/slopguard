@@ -26,6 +26,8 @@ import { Spinner } from "@/components/ui/Spinner";
 const ERROR_MESSAGES: Record<string, string> = {
   access_denied: "Acceso denegado. Autoriza la aplicación en GitHub e inténtalo de nuevo.",
   oauth_failed: "Error durante la autenticación con GitHub. Inténtalo de nuevo.",
+  oauth_unavailable:
+    "El inicio de sesión con GitHub no está configurado en este servidor. Configura el OAuth de GitHub (ver el runbook de self-host).",
   session_expired: "Tu sesión expiró. Inicia sesión nuevamente.",
   callback_error: "Error al procesar la respuesta de GitHub. Inténtalo de nuevo.",
 };

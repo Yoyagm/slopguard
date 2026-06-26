@@ -78,7 +78,12 @@ cp apps/api/.env.example apps/api/.env
 #   GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY      (GitHub App)
 #   GITHUB_WEBHOOK_SECRET                       (secreto del webhook)
 #   ANTHROPIC_API_KEY        (opcional; activa la Capa 4 LLM)
+#   WEB_BASE_URL             (opcional; URL pública del front, default http://localhost:3000)
 ```
+
+> `WEB_BASE_URL` es la URL a la que el API redirige tras el login (al dashboard) y donde muestra
+> los errores de OAuth (`/login?error=…`). En self-host con el API y el web en puertos distintos
+> DEBE ser la URL del **web** (no del API), o el redirect post-login caería en el host del API.
 
 `docker-compose.yml` carga `apps/api/.env` de forma **opcional** (`required: false`) y sobreescribe
 `DATABASE_URL`/`REDIS_URL` para apuntar a los servicios de la red Docker. Reinicia tras editar:

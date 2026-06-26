@@ -83,10 +83,13 @@ async def login(settings: SettingsDep, state_store: StateStoreDep) -> RedirectRe
     """Inicia OAuth: emite `state` single-use y redirige a GitHub (R1.1)."""
     client_id = settings.github_client_id
     if not client_id:
-        # Sin credenciales no hay login posible: fail-closed con error saneado.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Login con GitHub no disponible (configuración incompleta).",
+        # Sin credenciales no hay login posible. El navegador llega aquí por una navegación de
+        # página completa, así que en vez de un JSON 503 crudo redirigimos a la pantalla de login
+        # del front con un código de error que esta traduce a un mensaje legible. `web_base_url`
+        # es config de confianza y el código es un literal: sin open-redirect ni inyección.
+        return RedirectResponse(
+            f"{settings.web_base_url}/login?error=oauth_unavailable",
+            status_code=status.HTTP_302_FOUND,
         )
 
     state = await state_store.issue()
@@ -149,8 +152,13 @@ async def callback(
         ) from exc
 
     # 3) Abrir sesión de servidor y redirigir al dashboard con la cookie httpOnly.
+    # URL ABSOLUTA del front: el API y el web pueden estar en orígenes/puertos distintos
+    # (self-host), así que una ruta relativa caería en el host del API (404). `web_base_url`
+    # es config de confianza (sin open-redirect).
     cookie_value = await sessions.create(user_id)
-    response = RedirectResponse(_DASHBOARD_PATH, status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(
+        f"{settings.web_base_url}{_DASHBOARD_PATH}", status_code=status.HTTP_302_FOUND
+    )
     _set_session_cookie(response, cookie_value, secure=settings.is_production)
     # Nota de no-fuga: NO logueamos `identity.login` con el token; el token nunca se loguea.
     logger.info("Sesión iniciada para usuario %s.", user_id)

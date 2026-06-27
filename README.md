@@ -683,7 +683,11 @@ import-linter).
 
 - **Backend** (`apps/api`): FastAPI + SQLAlchemy/Postgres + Redis + worker Arq. Ver `apps/api/README.md`.
 - **Frontend** (`apps/web`): Next.js (App Router, dark "terminal de seguridad"). Ver `apps/web/README.md`.
-- **Self-host** con un comando (`docker compose up --build`): runbook en **`docs/self-host.md`**.
+- **Self-host local** con un comando (`docker compose up --build`): cada quien levanta su propia
+  instancia (no hay servidor central; cada despliegue trae sus GitHub Apps y secretos). Runbook en
+  **`docs/self-host.md`**.
+- **Producción (VPS + dominio + TLS)**: despliegue real en internet con Caddy (reverse proxy +
+  HTTPS automático, único origen). Runbook paso a paso en **`docs/deploy-vps.md`**.
 - **E2E** del flujo crítico (Playwright): `apps/web/e2e/README.md`.
 
 ```bash
